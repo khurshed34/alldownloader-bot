@@ -42,4 +42,6 @@ jobs:
       - name: Start TurboSave
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          AUDD_API_TOKEN: ${{ secrets.AUDD_API_TOKEN }}
+          JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
         run: python main.py
