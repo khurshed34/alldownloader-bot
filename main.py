@@ -9,6 +9,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 
+
 # =====================================
 # TURBOSAVE SETTINGS
 # =====================================
@@ -71,8 +72,10 @@ def valid_url(url):
 
         try:
             ip = ipaddress.ip_address(host)
+
             if not ip.is_global:
                 return False
+
         except ValueError:
             pass
 
@@ -247,8 +250,12 @@ def find_file(folder, mode):
             lower = filename.lower()
 
             if lower.endswith((
-                ".part", ".ytdl", ".json",
-                ".description", ".vtt", ".srt"
+                ".part",
+                ".ytdl",
+                ".json",
+                ".description",
+                ".vtt",
+                ".srt"
             )):
                 continue
 
@@ -310,6 +317,7 @@ def download_media(url, quality, folder):
     )
 
     if quality == "mp3":
+
         options = {
             "format": "bestaudio/best",
             "outtmpl": output_template,
@@ -330,8 +338,10 @@ def download_media(url, quality, folder):
         }
 
     else:
+
         if quality == "best":
             fmt = "bestvideo+bestaudio/best"
+
         else:
             fmt = (
                 f"bestvideo[height<={quality}]+bestaudio/"
@@ -377,25 +387,52 @@ def download_media(url, quality, folder):
 def friendly_error(error):
     message = str(error).lower()
 
+    # YouTube bot check
     if (
         "sign in to confirm" in message
         or "not a bot" in message
     ):
         return (
-            "⚠️ YouTube ҳоло зеркаширо аз сервер маҳдуд кардааст.\n\n"
-            "Ин мушкили FFmpeg нест. Баъдтар аз нав санҷед "
-            "ё видеоро аз роҳи расмии дастрас истифода баред."
+            "⚠️ YouTube зеркаширо аз сервер маҳдуд кардааст.\n\n"
+            "Ин мушкили FFmpeg нест.\n"
+            "Лутфан баъдтар аз нав санҷед."
         )
 
+    # Instagram Story restriction
+    if (
+        "instagram:story" in message
+        or "you need to log in to access this content" in message
+    ):
+        return (
+            "🔒 Instagram барои ин Story воридшавиро талаб мекунад.\n\n"
+            "Ҳатто агар аккаунт Public бошад, сервер метавонад "
+            "ба Story дастрасӣ надошта бошад.\n\n"
+            "📌 Видео ё Reels-и оммавиро санҷед."
+        )
+
+    # Other login restrictions
+    if (
+        "private" in message
+        or "login required" in message
+        or "authentication" in message
+        or "cookies" in message
+    ):
+        return (
+            "🔒 Ин мавод дастрас нест ё барои дидани он "
+            "иҷозат талаб мекунад."
+        )
+
+    # FFmpeg
     if (
         "ffmpeg" in message
         or "ffprobe" in message
     ):
         return (
-            "❌ FFmpeg дуруст кор накард.\n"
-            "Лутфан танзимоти GitHub Actions-ро санҷед."
+            "❌ Дар коркарди файл мушкили FFmpeg пайдо шуд.\n"
+            "Танзимоти GitHub Actions-ро санҷед."
         )
 
+    # File size
     if (
         "too large" in message
         or "max_filesize" in message
@@ -406,29 +443,21 @@ def friendly_error(error):
             "Сифати пасттарро интихоб кунед."
         )
 
-    if (
-        "private" in message
-        or "login required" in message
-        or "authentication" in message
-    ):
-        return (
-            "🔒 Ин мавод хусусӣ аст ё барои дидани он иҷозат лозим аст."
-        )
-
+    # Unsupported URL
     if (
         "unsupported url" in message
         or "no suitable extractor" in message
     ):
-        return (
-            "❌ Ин ссылка ҳоло дастгирӣ намешавад."
-        )
+        return "❌ Ин ссылка ҳоло дастгирӣ намешавад."
 
+    # Network error
     if (
         "unable to download" in message
         or "http error" in message
     ):
         return (
-            "🌐 Сайт ҳоло ҷавоб намедиҳад ё файл дастрас нест."
+            "🌐 Сайт ҷавоб намедиҳад ё файл дастрас нест.\n"
+            "Баъдтар аз нав санҷед."
         )
 
     return (
@@ -448,6 +477,7 @@ def friendly_error(error):
     )
 )
 def download_callback(call):
+
     status = None
     job_id = None
 
@@ -509,6 +539,7 @@ def download_callback(call):
         mode = "mp3" if action == "a" else quality
 
         with tempfile.TemporaryDirectory() as folder:
+
             path = download_media(
                 job["url"],
                 mode,
@@ -518,6 +549,7 @@ def download_callback(call):
             ext = os.path.splitext(path)[1].lower()
 
             with open(path, "rb") as media:
+
                 if mode == "mp3":
                     bot.send_audio(
                         call.message.chat.id,
@@ -553,6 +585,7 @@ def download_callback(call):
         )
 
     except Exception as error:
+
         print("DOWNLOAD ERROR:", repr(error))
 
         try:
@@ -560,10 +593,15 @@ def download_callback(call):
                 call.message.chat.id,
                 friendly_error(error)
             )
+
         except Exception as send_error:
-            print("TELEGRAM SEND ERROR:", repr(send_error))
+            print(
+                "TELEGRAM SEND ERROR:",
+                repr(send_error)
+            )
 
     finally:
+
         if job_id:
             jobs.pop(job_id, None)
 
