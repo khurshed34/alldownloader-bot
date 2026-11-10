@@ -1,22 +1,22 @@
 
 import os
 import re
+import html
 import shutil
 import tempfile
 import subprocess
 import ipaddress
-from urllib.parse import urlparse
-from html import escape
-
 import requests
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 
+from urllib.parse import urlparse, quote_plus
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# =========================================
-# TURBOSAVE SETTINGS
-# =========================================
+
+# =====================================
+# SETTINGS
+# =====================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 AUDD_TOKEN = os.getenv("AUDD_API_TOKEN")
@@ -28,115 +28,47 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 MAX_SIZE = 45 * 1024 * 1024
-MAX_MUSIC_INPUT = 20 * 1024 * 1024
+MAX_INPUT_SIZE = 20 * 1024 * 1024
 AUDD_MAX_SIZE = 10 * 1024 * 1024
 
-ALLOWED_DOMAINS = {
-    "instagram.com", "www.instagram.com", "m.instagram.com",
-    "youtube.com", "www.youtube.com", "m.youtube.com",
-    "youtu.be", "music.youtube.com",
-    "tiktok.com", "www.tiktok.com",
-    "vm.tiktok.com", "vt.tiktok.com",
-    "facebook.com", "www.facebook.com", "m.facebook.com",
+ALLOWED_DOMAINS = (
+    "youtube.com",
+    "youtu.be",
+    "instagram.com",
+    "tiktok.com",
+    "facebook.com",
     "fb.watch",
-    "x.com", "www.x.com",
-    "twitter.com", "www.twitter.com",
-    "pinterest.com", "www.pinterest.com", "pin.it",
-}
+    "twitter.com",
+    "x.com",
+    "pinterest.com",
+    "pin.it",
+)
 
-user_jobs = {}
-
-
-# =========================================
-# URL VALIDATION
-# =========================================
-
-def valid_url(url):
-    try:
-        parsed = urlparse(url.strip())
-
-        if parsed.scheme not in ("http", "https"):
-            return False
-
-        if not parsed.hostname:
-            return False
-
-        if parsed.username or parsed.password:
-            return False
-
-        host = parsed.hostname.lower()
-
-        if host not in ALLOWED_DOMAINS:
-            return False
-
-        try:
-            ip = ipaddress.ip_address(host)
-            if not ip.is_global:
-                return False
-        except ValueError:
-            pass
-
-        return True
-
-    except Exception:
-        return False
+user_modes = {}
 
 
-def detect_platform(url):
-    host = (urlparse(url).hostname or "").lower()
-
-    if "instagram.com" in host:
-        return "Instagram"
-    if "youtube.com" in host or host == "youtu.be":
-        return "YouTube"
-    if "tiktok.com" in host:
-        return "TikTok"
-    if "facebook.com" in host or host == "fb.watch":
-        return "Facebook"
-    if "twitter.com" in host or "x.com" in host:
-        return "X"
-    if "pinterest.com" in host or host == "pin.it":
-        return "Pinterest"
-
-    return "Сомона"
-
-
-# =========================================
-# KEYBOARDS
-# =========================================
+# =====================================
+# MENUS
+# =====================================
 
 def main_menu():
-    markup = InlineKeyboardMarkup(row_width=1)
-
-    markup.add(
-        InlineKeyboardButton(
-            "📥 Оғози зеркашӣ",
-            callback_data="start_download"
-        ),
-        InlineKeyboardButton(
-            "🎧 Шинохтани мусиқӣ",
-            callback_data="recognize"
-        ),
-        InlineKeyboardButton(
-            "ℹ️ Дастур",
-            callback_data="help"
-        )
-    )
-
-    return markup
-
-
-def download_menu():
     markup = InlineKeyboardMarkup(row_width=2)
 
     markup.add(
         InlineKeyboardButton(
-            "🎬 Видео",
-            callback_data="download_video"
+            "📥 Видео зеркашӣ",
+            callback_data="video"
         ),
         InlineKeyboardButton(
-            "🎵 Мусиқӣ MP3",
-            callback_data="download_music"
+            "🎵 Мусиқӣ ёфтан",
+            callback_data="music"
+        )
+    )
+
+    markup.add(
+        InlineKeyboardButton(
+            "ℹ️ Ёрӣ",
+            callback_data="help"
         )
     )
 
@@ -146,349 +78,238 @@ def download_menu():
 def quality_menu():
     markup = InlineKeyboardMarkup(row_width=2)
 
+    for quality in ("360", "480", "720", "1080"):
+        markup.add(
+            InlineKeyboardButton(
+                f"{quality}p",
+                callback_data=f"q_{quality}"
+            )
+        )
+
     markup.add(
-        InlineKeyboardButton("360p", callback_data="quality_360"),
-        InlineKeyboardButton("720p", callback_data="quality_720"),
-        InlineKeyboardButton("1080p", callback_data="quality_1080"),
         InlineKeyboardButton(
-            "Беҳтарин сифат",
-            callback_data="quality_best"
+            "🎵 MP3",
+            callback_data="q_mp3"
         )
     )
 
     return markup
 
 
-# =========================================
-# START / HELP
-# =========================================
+# =====================================
+# URL VALIDATION
+# =====================================
 
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.send_message(
-        message.chat.id,
-        "👋 Хуш омадед ба TurboSave!\n\n"
-        "📥 Видео ва мусиқиро аз сомонаҳои дастгиришаванда гиред.\n\n"
-        "🎧 Мусиқиро аз видео шинохта гиред.\n\n"
-        "Барои оғоз тугмаро зер кунед.",
-        reply_markup=main_menu()
-    )
+def valid_url(url):
+    try:
+        parsed = urlparse(url)
 
+        if parsed.scheme not in ("http", "https"):
+            return False
 
-@bot.message_handler(commands=["help"])
-def help_command(message):
-    bot.send_message(
-        message.chat.id,
-        "📌 Дастури TurboSave\n\n"
-        "1. Оғози зеркашӣ-ро пахш кунед.\n"
-        "2. Пайванди видео ё постро фиристед.\n"
-        "3. Видео ё MP3-ро интихоб кунед.\n\n"
-        "Барои шинохтани мусиқӣ файли видео ё аудио фиристед."
-    )
+        host = (parsed.hostname or "").lower()
 
+        if not host:
+            return False
 
-# =========================================
-# CALLBACKS
-# =========================================
+        try:
+            ip = ipaddress.ip_address(host)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callbacks(call):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
-    data = call.data
+            if not ip.is_global:
+                return False
 
-    bot.answer_callback_query(call.id)
+        except ValueError:
+            pass
 
-    if data == "start_download":
-        bot.send_message(
-            chat_id,
-            "🔗 Пайванди видео ё постро фиристед."
-        )
-        return
-
-    if data == "recognize":
-        bot.send_message(
-            chat_id,
-            "🎧 Видео, аудио ё файли мусиқиро фиристед.\n\n"
-            "Ман номи суруд ва иҷрогарро муайян мекунам."
-        )
-        return
-
-    if data == "help":
-        help_command(call.message)
-        return
-
-    if data in ("download_video", "download_music"):
-        if user_id not in user_jobs:
-            bot.send_message(
-                chat_id,
-                "⚠️ Аввал пайванди видео ё постро фиристед."
-            )
-            return
-
-        if data == "download_video":
-            bot.send_message(
-                chat_id,
-                "🎬 Сифати видеоро интихоб кунед:",
-                reply_markup=quality_menu()
-            )
-        else:
-            bot.send_message(
-                chat_id,
-                "🎵 Мусиқӣ гирифта ва шинохта мешавад.\n"
-                "Агар нусхаи иҷозатдодашуда дар Jamendo бошад, "
-                "MP3 фиристода мешавад."
-            )
-
-            download_callback(
-                chat_id,
-                user_id,
-                "music",
-                "best"
-            )
-
-        return
-
-    if data.startswith("quality_"):
-        quality = data.replace("quality_", "")
-
-        if user_id not in user_jobs:
-            bot.send_message(
-                chat_id,
-                "⚠️ Пайвандро аз нав фиристед."
-            )
-            return
-
-        download_callback(
-            chat_id,
-            user_id,
-            "video",
-            quality
+        return any(
+            host == domain or host.endswith("." + domain)
+            for domain in ALLOWED_DOMAINS
         )
 
-
-# =========================================
-# YT-DLP SETTINGS
-# =========================================
-
-def ydl_options(folder, mode="video", quality="best"):
-    output = os.path.join(
-        folder,
-        "%(title).80s_%(id)s.%(ext)s"
-    )
-
-    options = {
-        "outtmpl": output,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 3,
-        "fragment_retries": 3,
-        "socket_timeout": 25,
-        "max_filesize": MAX_SIZE,
-        "overwrites": True,
-    }
-
-    if mode == "music":
-        options.update({
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-        })
-
-    else:
-        if quality == "360":
-            fmt = "best[height<=360]/best"
-        elif quality == "720":
-            fmt = "best[height<=720]/best"
-        elif quality == "1080":
-            fmt = "best[height<=1080]/best"
-        else:
-            fmt = "best"
-
-        options.update({
-            "format": fmt,
-            "merge_output_format": "mp4",
-        })
-
-    return options
+    except Exception:
+        return False
 
 
-# =========================================
+# =====================================
 # FILE HELPERS
-# =========================================
+# =====================================
 
-def find_file(folder, mode):
-    if not os.path.isdir(folder):
-        return None
+def get_size(path):
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
 
-    files = []
 
+def remove_file(path):
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
+def normalize_text(value):
+    value = str(value or "").lower()
+    value = re.sub(r"[^\w\s]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def find_file(folder, extension=None):
     for name in os.listdir(folder):
         path = os.path.join(folder, name)
 
         if not os.path.isfile(path):
             continue
 
-        if name.endswith((".part", ".ytdl", ".tmp")):
-            continue
+        if extension is None or name.lower().endswith(extension):
+            return path
 
-        size = os.path.getsize(path)
-
-        if size <= 0 or size > MAX_SIZE:
-            continue
-
-        if mode == "music":
-            if name.lower().endswith(".mp3"):
-                files.append(path)
-        else:
-            if name.lower().endswith(
-                (".mp4", ".mkv", ".webm", ".mov", ".m4v")
-            ):
-                files.append(path)
-
-    if not files:
-        return None
-
-    return max(files, key=os.path.getsize)
+    return None
 
 
-# =========================================
-# MUSIC TEXT NORMALIZATION
-# =========================================
+# =====================================
+# FFMPEG
+# =====================================
 
-def normalize_text(text):
-    return "".join(
-        char.casefold()
-        for char in str(text or "")
-        if char.isalnum()
+def check_ffmpeg():
+    return shutil.which("ffmpeg") is not None
+
+
+def convert_to_mp3(source, destination, seconds=12):
+    if not check_ffmpeg():
+        raise RuntimeError("FFmpeg насб нашудааст.")
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", source,
+        "-vn",
+        "-ac", "1",
+        "-ar", "44100",
+        "-b:a", "128k",
+        "-t", str(seconds),
+        destination
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=120
     )
 
+    if result.returncode != 0:
+        raise RuntimeError("Табдили MP3 иҷро нашуд.")
 
-# =========================================
-# AUDD MUSIC RECOGNITION
-# =========================================
+    if not os.path.isfile(destination):
+        raise RuntimeError("Файли MP3 сохта нашуд.")
 
-def recognize_audio_file(file_path, folder):
+    return destination
+
+
+# =====================================
+# AUDD RECOGNITION
+# =====================================
+
+def recognize_audio_file(path):
     if not AUDD_TOKEN:
-        print("AUDD_API_TOKEN missing")
-        return None
+        return {"error": "AUDD_API_TOKEN дар GitHub Secrets нест."}
 
-    if not shutil.which("ffmpeg"):
-        print("FFmpeg missing")
-        return None
-
-    converted = os.path.join(
-        folder,
-        "audd_sample.mp3"
-    )
+    if get_size(path) > AUDD_MAX_SIZE:
+        return {"error": "Файл барои AudD калон аст."}
 
     try:
-        command = [
-            "ffmpeg",
-            "-y",
-            "-i", file_path,
-            "-t", "12",
-            "-vn",
-            "-ac", "1",
-            "-ar", "44100",
-            "-b:a", "96k",
-            converted
-        ]
-
-        result = subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=45
-        )
-
-        if result.returncode != 0:
-            return None
-
-        if not os.path.exists(converted):
-            return None
-
-        if os.path.getsize(converted) > AUDD_MAX_SIZE:
-            return None
-
-        with open(converted, "rb") as audio:
+        with open(path, "rb") as audio:
             response = requests.post(
                 "https://api.audd.io/",
                 data={
                     "api_token": AUDD_TOKEN,
-                    "return": "spotify,apple_music",
+                    "return": "spotify,apple_music"
                 },
                 files={"file": audio},
-                timeout=60
+                timeout=90
             )
 
         response.raise_for_status()
         data = response.json()
 
         if data.get("status") != "success":
-            print("AudD response:", data)
-            return None
+            return {"error": "AudD хато баргардонд."}
 
         return data.get("result")
 
+    except requests.RequestException as error:
+        print("AudD request error:", error)
+        return {"error": "Ба AudD пайваст нашуд."}
+
     except Exception as error:
         print("AudD error:", error)
-        return None
+        return {"error": "Шинохти мусиқӣ иҷро нашуд."}
 
 
-# =========================================
+# =====================================
 # MUSIC MESSAGE
-# =========================================
+# =====================================
 
 def music_message(song):
     title = song.get("title") or "Номаълум"
     artist = song.get("artist") or "Номаълум"
 
     text = (
-        "🎧 Мусиқӣ ёфт шуд!\n\n"
-        f"🎵 Ном: {title}\n"
-        f"👤 Иҷрокунанда: {artist}\n"
+        "🎵 <b>Суруд ёфт шуд!</b>\n\n"
+        f"🎼 Ном: <b>{html.escape(title)}</b>\n"
+        f"👤 Иҷрокунанда: <b>{html.escape(artist)}</b>\n"
     )
 
     spotify = song.get("spotify")
     apple = song.get("apple_music")
 
     if isinstance(spotify, dict):
-        external_urls = spotify.get("external_urls") or {}
-        link = external_urls.get("spotify")
+        url = spotify.get("external_urls", {}).get("spotify")
 
-        if link:
-            text += f"\n🟢 Spotify: {link}"
+        if url:
+            text += (
+                f'\n🟢 <a href="{html.escape(url, quote=True)}">'
+                "Spotify</a>"
+            )
 
     if isinstance(apple, dict):
-        link = apple.get("url")
+        url = apple.get("url")
 
-        if link:
-            text += f"\n🍎 Apple Music: {link}"
+        if url:
+            text += (
+                f'\n🍎 <a href="{html.escape(url, quote=True)}">'
+                "Apple Music</a>"
+            )
+
+    query = quote_plus(f"{title} {artist}")
+
+    soundcloud = (
+        f"https://soundcloud.com/search/sounds?q={query}"
+    )
+
+    bandcamp = (
+        f"https://bandcamp.com/search?q={query}"
+    )
+
+    text += (
+        "\n\n🔎 <b>Ҷустуҷӯи мусиқӣ:</b>"
+        f'\n🎧 <a href="{soundcloud}">SoundCloud</a>'
+        f'\n🎸 <a href="{bandcamp}">Bandcamp</a>'
+    )
 
     return text
 
 
-# =========================================
-# JAMENDO SEARCH AND DOWNLOAD
-# =========================================
+# =====================================
+# JAMENDO
+# =====================================
 
-def download_jamendo_music(song, folder):
+def download_jamendo_music(title, artist, folder):
     if not JAMENDO_CLIENT_ID:
-        print("JAMENDO_CLIENT_ID missing")
         return None
-
-    title = (song.get("title") or "").strip()
-    artist = (song.get("artist") or "").strip()
-
-    if not title:
-        return None
-
-    search_text = f"{title} {artist}".strip()
 
     try:
         response = requests.get(
@@ -496,71 +317,38 @@ def download_jamendo_music(song, folder):
             params={
                 "client_id": JAMENDO_CLIENT_ID,
                 "format": "json",
-                "search": search_text,
-                "limit": 20,
-                "order": "relevance",
-                "audioformat": "mp32",
-                "audiodlformat": "mp32",
+                "limit": 10,
+                "namesearch": f"{title} {artist}",
+                "audioformat": "mp32"
             },
             timeout=30
         )
 
         response.raise_for_status()
-        data = response.json()
 
-        if data.get("headers", {}).get("status") != "success":
-            print("Jamendo API:", data.get("headers"))
-            return None
-
-        results = data.get("results", [])
-
-        if not results:
-            return None
+        tracks = response.json().get("results", [])
 
         wanted_title = normalize_text(title)
         wanted_artist = normalize_text(artist)
 
-        for track in results:
+        for track in tracks:
             if not track.get("audiodownload_allowed"):
                 continue
 
-            track_title = track.get("name") or ""
-            track_artist = track.get("artist_name") or ""
+            found_title = normalize_text(track.get("name"))
+            found_artist = normalize_text(track.get("artist_name"))
 
-            found_title = normalize_text(track_title)
-            found_artist = normalize_text(track_artist)
-
-            # Номи суруд бояд мувофиқат кунад.
             title_match = (
-                wanted_title == found_title
-                or (
-                    len(wanted_title) >= 5
-                    and wanted_title in found_title
-                )
-                or (
-                    len(found_title) >= 5
-                    and found_title in wanted_title
-                )
+                wanted_title in found_title
+                or found_title in wanted_title
             )
 
-            # Агар AudD иҷрогарро муайян карда бошад,
-            # иҷрогар низ бояд мувофиқат кунад.
             artist_match = (
-                wanted_artist == found_artist
-                or (
-                    len(wanted_artist) >= 4
-                    and wanted_artist in found_artist
-                )
-                or (
-                    len(found_artist) >= 4
-                    and found_artist in wanted_artist
-                )
-            ) if wanted_artist and found_artist else False
+                wanted_artist in found_artist
+                or found_artist in wanted_artist
+            )
 
-            if not title_match:
-                continue
-
-            if wanted_artist and not artist_match:
+            if not title_match or not artist_match:
                 continue
 
             download_url = track.get("audiodownload")
@@ -568,202 +356,366 @@ def download_jamendo_music(song, folder):
             if not download_url:
                 continue
 
-            file_path = os.path.join(
-                folder,
-                "jamendo_music.mp3"
-            )
-
-            total = 0
-
-            with requests.get(
+            result = requests.get(
                 download_url,
                 stream=True,
                 timeout=60
-            ) as download_response:
+            )
 
-                download_response.raise_for_status()
+            result.raise_for_status()
 
-                with open(file_path, "wb") as output:
-                    for chunk in download_response.iter_content(
-                        chunk_size=64 * 1024
-                    ):
-                        if not chunk:
-                            continue
+            output = os.path.join(folder, "jamendo.mp3")
+            total = 0
 
-                        total += len(chunk)
+            with open(output, "wb") as file:
+                for chunk in result.iter_content(65536):
+                    if not chunk:
+                        continue
 
-                        if total > MAX_SIZE:
-                            output.close()
-                            os.remove(file_path)
-                            return None
+                    total += len(chunk)
 
-                        output.write(chunk)
+                    if total > MAX_SIZE:
+                        file.close()
+                        remove_file(output)
+                        return None
 
-            if not os.path.exists(file_path):
-                continue
+                    file.write(chunk)
 
-            if os.path.getsize(file_path) <= 0:
-                continue
+            if total > 1000:
+                return output
 
-            return {
-                "path": file_path,
-                "title": track_title,
-                "artist": track_artist,
-            }
-
-        return None
+            remove_file(output)
 
     except Exception as error:
         print("Jamendo error:", error)
-        return None
+
+    return None
 
 
-# =========================================
-# RECOGNIZE AND SEND MUSIC
-# =========================================
+# =====================================
+# RECOGNIZE AND SEND
+# =====================================
 
-def recognize_and_send_music(chat_id, file_path, folder):
-    if not AUDD_TOKEN:
-        bot.send_message(
-            chat_id,
-            "⚠️ AUDD_API_TOKEN дар GitHub Secrets нест."
-        )
-        return
-
-    bot.send_message(
-        chat_id,
-        "🔎 Мусиқӣ шинохта шуда истодааст..."
-    )
-
-    song = recognize_audio_file(file_path, folder)
-
-    if not song:
-        bot.send_message(
-            chat_id,
-            "❌ Мусиқиро муайян карда натавонистам.\n\n"
-            "Лутфан файли дигар ё порчаи равшантар фиристед."
-        )
-        return
-
-    # Ном ва пайвандҳои суруд.
-    bot.send_message(
-        chat_id,
-        music_message(song),
-        disable_web_page_preview=True
-    )
-
-    if not JAMENDO_CLIENT_ID:
-        bot.send_message(
-            chat_id,
-            "⚠️ JAMENDO_CLIENT_ID дар GitHub Secrets нест."
-        )
-        return
-
-    bot.send_message(
-        chat_id,
-        "🎵 Ҳоло нусхаи иҷозатдодашудаи суруд "
-        "дар каталоги Jamendo ҷустуҷӯ мешавад..."
-    )
-
-    found = download_jamendo_music(song, folder)
-
-    if not found:
-        bot.send_message(
-            chat_id,
-            "ℹ️ Ин суруд дар каталоги зеркашии Jamendo "
-            "бо иҷозати дастрас ёфт нашуд.\n\n"
-            "Ман MP3-и пурраи сурудро аз манбаи бе иҷозат "
-            "намефиристам.\n\n"
-            "Метавонед аз пайванди Spotify ё Apple Music "
-            "дар боло истифода баред."
-        )
-        return
-
-    with open(found["path"], "rb") as audio:
-        bot.send_audio(
-            chat_id,
-            audio,
-            title=found["title"],
-            performer=found["artist"],
-            caption=(
-                "🎵 Суруди пурра аз каталоги Jamendo\n"
-                "✅ Зеркашӣ барои ин трек иҷозат дода шудааст."
-            )
-        )
-
-
-# =========================================
-# DOWNLOAD VIDEO / MUSIC FROM LINK
-# =========================================
-
-def download_callback(chat_id, user_id, mode, quality):
-    url = user_jobs.get(user_id)
-
-    if not url:
-        bot.send_message(
-            chat_id,
-            "⚠️ Пайванд ёфт нашуд. Аз нав фиристед."
-        )
-        return
-
-    platform = detect_platform(url)
-
-    status = bot.send_message(
-        chat_id,
-        f"⏳ Аз {platform} зеркашӣ оғоз шуд..."
-    )
+def recognize_and_send_music(chat_id, source_path):
+    folder = tempfile.mkdtemp(prefix="music_")
 
     try:
-        with tempfile.TemporaryDirectory() as folder:
-            options = ydl_options(
-                folder,
-                mode=mode,
-                quality=quality
-            )
+        mp3_path = os.path.join(folder, "recognize.mp3")
 
-            with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.download([url])
+        convert_to_mp3(
+            source_path,
+            mp3_path,
+            seconds=12
+        )
 
-            file_path = find_file(folder, mode)
+        song = recognize_audio_file(mp3_path)
 
-            if not file_path:
-                bot.edit_message_text(
-                    "❌ Файл гирифта нашуд ё аз лимити 45 MB калон аст.\n\n"
-                    "Эҳтимол сомона зеркаширо маҳдуд кардааст.",
-                    chat_id,
-                    status.message_id
-                )
-                return
-
-            if mode == "music":
-                bot.edit_message_text(
-                    "🎧 Мусиқӣ гирифта шуд. Ҳоло сурудро мешиносам...",
-                    chat_id,
-                    status.message_id
-                )
-
-                recognize_and_send_music(
-                    chat_id,
-                    file_path,
-                    folder
-                )
-                return
-
-            bot.edit_message_text(
-                "📤 Видео омода шуд. Ба Telegram фиристода мешавад...",
+        if not song:
+            bot.send_message(
                 chat_id,
-                status.message_id
+                "❌ Суруд муайян карда нашуд."
+            )
+            return
+
+        if song.get("error"):
+            bot.send_message(
+                chat_id,
+                "⚠️ " + song["error"]
+            )
+            return
+
+        bot.send_message(
+            chat_id,
+            music_message(song),
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+
+        title = song.get("title") or ""
+        artist = song.get("artist") or ""
+
+        found = download_jamendo_music(
+            title,
+            artist,
+            folder
+        )
+
+        if found:
+            with open(found, "rb") as audio:
+                bot.send_audio(
+                    chat_id,
+                    audio,
+                    title=title,
+                    performer=artist,
+                    caption="🎵 Версияи иҷозатдодашуда аз Jamendo"
+                )
+        else:
+            bot.send_message(
+                chat_id,
+                "ℹ️ Дар Jamendo нусхаи иҷозатдодашуда ёфт нашуд.\n\n"
+                "Метавонӣ аз пайвандҳои SoundCloud ё Bandcamp "
+                "сурудро ҷустуҷӯ кунӣ. Зеркашӣ танҳо бо иҷозати "
+                "соҳиби суруд ё платформа мумкин аст."
             )
 
-            with open(file_path, "rb") as media:
+    except Exception as error:
+        print("Recognition error:", error)
+
+        bot.send_message(
+            chat_id,
+            "❌ Ҳангоми шинохти мусиқӣ хато рух дод."
+        )
+
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+# =====================================
+# VIDEO DOWNLOAD
+# =====================================
+
+def download_video(url, quality, folder):
+    output = os.path.join(
+        folder,
+        "%(title).80s.%(ext)s"
+    )
+
+    formats = {
+        "360": "best[height<=360]/best",
+        "480": "best[height<=480]/best",
+        "720": "best[height<=720]/best",
+        "1080": "best[height<=1080]/best"
+    }
+
+    options = {
+        "outtmpl": output,
+        "format": formats.get(quality, "best"),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_SIZE,
+        "socket_timeout": 30,
+        "retries": 2
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    return find_file(folder)
+
+
+# =====================================
+# AUDIO DOWNLOAD
+# =====================================
+
+def download_audio(url, folder):
+    output = os.path.join(
+        folder,
+        "%(title).80s.%(ext)s"
+    )
+
+    options = {
+        "outtmpl": output,
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "max_filesize": MAX_INPUT_SIZE,
+        "socket_timeout": 30,
+        "retries": 2,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192"
+            }
+        ]
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
+
+    return find_file(folder, ".mp3")
+
+
+# =====================================
+# START
+# =====================================
+
+@bot.message_handler(commands=["start"])
+def start(message):
+    user_modes.pop(message.chat.id, None)
+
+    bot.send_message(
+        message.chat.id,
+        "👋 Хуш омадед ба <b>TurboSave</b>!\n\n"
+        "📥 Видео зеркашӣ кун.\n"
+        "🎵 Мусиқии дохили видеоро ёб.",
+        reply_markup=main_menu(),
+        parse_mode="HTML"
+    )
+
+
+# =====================================
+# HELP
+# =====================================
+
+@bot.message_handler(commands=["help"])
+def help_command(message):
+    bot.send_message(
+        message.chat.id,
+        "📌 <b>Тарзи истифода:</b>\n\n"
+        "1. Видео зеркашӣ — пайвандро фирист.\n"
+        "2. Сифатро интихоб кун.\n"
+        "3. Барои мусиқӣ тугмаи «Мусиқӣ ёфтан»-ро пахш кун.\n"
+        "4. Видео ё аудиоро низ метавонӣ ба бот фиристӣ.\n\n"
+        "Дастгирӣ: YouTube, Instagram, TikTok, Facebook, "
+        "X ва Pinterest.\n\n"
+        "⚠️ Маводи хусусӣ ё маҳдудро бот кушода наметавонад.",
+        parse_mode="HTML"
+    )
+
+
+# =====================================
+# CALLBACKS
+# =====================================
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    chat_id = call.message.chat.id
+
+    if call.data == "video":
+        bot.answer_callback_query(call.id)
+
+        bot.send_message(
+            chat_id,
+            "📥 Аввал сифати видеоро интихоб кун:",
+            reply_markup=quality_menu()
+        )
+
+    elif call.data == "music":
+        bot.answer_callback_query(call.id)
+
+        user_modes[chat_id] = "music"
+
+        bot.send_message(
+            chat_id,
+            "🎵 Пайванди видео ё худи файлро фирист."
+        )
+
+    elif call.data == "help":
+        bot.answer_callback_query(call.id)
+        help_command(call.message)
+
+    elif call.data.startswith("q_"):
+        quality = call.data.replace("q_", "")
+
+        bot.answer_callback_query(call.id)
+
+        if quality == "mp3":
+            user_modes[chat_id] = "music"
+
+            bot.send_message(
+                chat_id,
+                "🎵 Пайванди видеоро фирист."
+            )
+
+        elif quality in ("360", "480", "720", "1080"):
+            user_modes[chat_id] = "video_" + quality
+
+            bot.send_message(
+                chat_id,
+                f"✅ Сифати {quality}p интихоб шуд.\n\n"
+                "Акнун пайванди видеоро фирист."
+            )
+
+
+# =====================================
+# RECEIVE LINKS
+# =====================================
+
+@bot.message_handler(
+    content_types=["text"],
+    func=lambda message: not message.text.startswith("/")
+)
+def receive_link(message):
+    chat_id = message.chat.id
+    url = message.text.strip()
+
+    if not valid_url(url):
+        bot.send_message(
+            chat_id,
+            "❌ Пайванди дурусти сайтро фирист."
+        )
+        return
+
+    mode = user_modes.get(chat_id, "video_720")
+
+    folder = tempfile.mkdtemp(prefix="download_")
+
+    try:
+        bot.send_message(
+            chat_id,
+            "⏳ Кор оғоз шуд. Каме интизор шав..."
+        )
+
+        if mode == "music":
+            path = download_audio(url, folder)
+
+            if not path:
+                bot.send_message(
+                    chat_id,
+                    "❌ Мусиқӣ гирифта нашуд."
+                )
+                return
+
+            if get_size(path) > MAX_INPUT_SIZE:
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Файли мусиқӣ хеле калон аст."
+                )
+                return
+
+            with open(path, "rb") as audio:
+                bot.send_audio(
+                    chat_id,
+                    audio,
+                    caption="🎵 TurboSave MP3"
+                )
+
+            recognize_and_send_music(chat_id, path)
+
+        else:
+            quality = mode.replace("video_", "")
+
+            path = download_video(
+                url,
+                quality,
+                folder
+            )
+
+            if not path:
+                bot.send_message(
+                    chat_id,
+                    "❌ Видео ёфт нашуд."
+                )
+                return
+
+            size = get_size(path)
+
+            if size > MAX_SIZE:
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Ҳаҷми видео аз 45 MB зиёд аст."
+                )
+                return
+
+            with open(path, "rb") as video:
                 bot.send_video(
                     chat_id,
-                    media,
-                    supports_streaming=True,
-                    caption=(
-                        f"✅ Боргирӣ аз {platform}\n"
-                        "🤖 TurboSave"
-                    )
+                    video,
+                    caption=f"📥 TurboSave | {quality}p"
                 )
 
     except Exception as error:
@@ -772,52 +724,18 @@ def download_callback(chat_id, user_id, mode, quality):
         bot.send_message(
             chat_id,
             "❌ Зеркашӣ иҷро нашуд.\n\n"
-            "Сабаб метавонад маҳдудияти сомона, "
-            "формат ё андозаи файл бошад.\n\n"
-            "Баъдтар аз нав санҷед."
+            "Мумкин аст сайт дастрас набошад, "
+            "формат дастгирӣ нашавад ё файл калон бошад."
         )
 
     finally:
-        user_jobs.pop(user_id, None)
+        shutil.rmtree(folder, ignore_errors=True)
+        user_modes.pop(chat_id, None)
 
 
-# =========================================
-# RECEIVE LINKS
-# =========================================
-
-@bot.message_handler(
-    content_types=["text"],
-    func=lambda message: not message.text.startswith("/")
-)
-def receive_link(message):
-    url = message.text.strip()
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-
-    if not valid_url(url):
-        bot.send_message(
-            chat_id,
-            "⚠️ Пайванди дурустро фиристед.\n\n"
-            "Instagram, YouTube, TikTok, Facebook, "
-            "X ва Pinterest дастгирӣ мешаванд."
-        )
-        return
-
-    user_jobs[user_id] = url
-
-    platform = detect_platform(url)
-
-    bot.send_message(
-        chat_id,
-        f"✅ Пайванд қабул шуд: {platform}\n\n"
-        "Чиро мехоҳед?",
-        reply_markup=download_menu()
-    )
-
-
-# =========================================
-# RECEIVE AUDIO / VIDEO / DOCUMENT
-# =========================================
+# =====================================
+# RECEIVE TELEGRAM MEDIA
+# =====================================
 
 @bot.message_handler(
     content_types=[
@@ -842,83 +760,66 @@ def receive_media(message):
     if not media:
         return
 
-    file_size = getattr(media, "file_size", 0) or 0
-
-    if file_size > MAX_MUSIC_INPUT:
+    if media.file_size and media.file_size > MAX_INPUT_SIZE:
         bot.send_message(
             chat_id,
-            "⚠️ Барои шинохтани мусиқӣ файл "
-            "бояд аз 20 MB зиёд набошад."
+            "⚠️ Файл аз 20 MB калон аст."
         )
         return
 
-    if not AUDD_TOKEN:
-        bot.send_message(
-            chat_id,
-            "⚠️ AUDD_API_TOKEN дар GitHub Secrets нест."
-        )
-        return
-
-    status = bot.send_message(
-        chat_id,
-        "⏳ Файл қабул шуд. Мусиқӣ шинохта мешавад..."
-    )
+    folder = tempfile.mkdtemp(prefix="telegram_media_")
 
     try:
-        with tempfile.TemporaryDirectory() as folder:
-            file_info = bot.get_file(media.file_id)
+        bot.send_message(
+            chat_id,
+            "🔎 Файл қабул шуд. Мусиқиро меҷӯям..."
+        )
 
-            downloaded = bot.download_file(
-                file_info.file_path
-            )
+        file_info = bot.get_file(media.file_id)
+        downloaded = bot.download_file(file_info.file_path)
 
-            extension = os.path.splitext(
-                file_info.file_path
-            )[1]
+        extension = os.path.splitext(
+            file_info.file_path
+        )[1]
 
-            if not extension:
-                extension = ".bin"
+        if not extension:
+            extension = ".bin"
 
-            input_path = os.path.join(
-                folder,
-                "input" + extension
-            )
+        source = os.path.join(
+            folder,
+            "input" + extension
+        )
 
-            with open(input_path, "wb") as output:
-                output.write(downloaded)
+        with open(source, "wb") as file:
+            file.write(downloaded)
 
-            if os.path.getsize(input_path) > MAX_MUSIC_INPUT:
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Файл аз лимити 20 MB калон аст."
-                )
-                return
-
-            bot.edit_message_text(
-                "🔎 Мусиқӣ шинохта мешавад...",
+        if get_size(source) > MAX_INPUT_SIZE:
+            bot.send_message(
                 chat_id,
-                status.message_id
+                "⚠️ Файл аз ҳадди иҷозатшуда калон аст."
             )
+            return
 
-            recognize_and_send_music(
-                chat_id,
-                input_path,
-                folder
-            )
+        recognize_and_send_music(
+            chat_id,
+            source
+        )
 
     except Exception as error:
-        print("Receive media error:", error)
+        print("Media receive error:", error)
 
         bot.send_message(
             chat_id,
-            "❌ Файлро коркард карда натавонистам.\n"
-            "Лутфан бори дигар санҷед."
+            "❌ Файл коркард нашуд."
         )
 
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
-# =========================================
-# START BOT
-# =========================================
+
+# =====================================
+# RUN BOT
+# =====================================
 
 print("TurboSave is running...")
 
