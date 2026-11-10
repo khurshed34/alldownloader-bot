@@ -1,3 +1,4 @@
+
 pyTelegramBotAPI
-yt-dlp[default]
 requests
+yt-dlp
