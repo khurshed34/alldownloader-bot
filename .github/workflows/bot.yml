@@ -6,6 +6,10 @@ on:
   schedule:
     - cron: "0 */6 * * *"
 
+concurrency:
+  group: turbosave-bot
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -19,6 +23,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install FFmpeg
         run: |
@@ -29,14 +34,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Update yt-dlp
-        run: |
           pip install --upgrade yt-dlp
+
+      - name: Check FFmpeg
+        run: |
+          ffmpeg -version
+          python --version
+          yt-dlp --version
 
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           AUDD_API_TOKEN: ${{ secrets.AUDD_API_TOKEN }}
           JAMENDO_CLIENT_ID: ${{ secrets.JAMENDO_CLIENT_ID }}
-        run: python main.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u main.py
