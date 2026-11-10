@@ -21,7 +21,7 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-MAX_SIZE = 45 * 1024 * 1024
+MAX_SIZE = 1024 * 1024 * 1024  # 1 GB
 jobs = {}
 
 ALLOWED_DOMAINS = (
