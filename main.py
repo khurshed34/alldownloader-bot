@@ -29,10 +29,10 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 # Telegram sending limit: use a conservative limit
-MAX_SIZE = 45 * 1024 * 1024
+MAX_SIZE = 205 * 1024 * 1024
 
 # Telegram cloud Bot API download limit for received files
-MAX_INPUT_SIZE = 20 * 1024 * 1024
+MAX_INPUT_SIZE = 100 * 1024 * 1024
 
 AUDD_MAX_SIZE = 100 * 1024 * 1024
 
