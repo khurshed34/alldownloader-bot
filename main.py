@@ -21,13 +21,13 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-MAX_SIZE = 1024 * 1024 * 1024  # 1 GB
+# Telegram upload safety limit
+MAX_SIZE = 45 * 1024 * 1024
+
 jobs = {}
 
 ALLOWED_DOMAINS = (
     "instagram.com",
-    "youtube.com",
-    "youtu.be",
     "tiktok.com",
     "facebook.com",
     "fb.watch",
@@ -72,10 +72,8 @@ def valid_url(url):
 
         try:
             ip = ipaddress.ip_address(host)
-
             if not ip.is_global:
                 return False
-
         except ValueError:
             pass
 
@@ -90,8 +88,6 @@ def get_platform(url):
 
     platforms = {
         "instagram.com": "Instagram",
-        "youtube.com": "YouTube",
-        "youtu.be": "YouTube",
         "tiktok.com": "TikTok",
         "facebook.com": "Facebook",
         "fb.watch": "Facebook",
@@ -111,7 +107,24 @@ def get_platform(url):
 # KEYBOARDS
 # =====================================
 
-def quality_keyboard(job_id):
+def mode_keyboard(job_id):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        InlineKeyboardButton(
+            "🎬 Видео",
+            callback_data=f"v|video|{job_id}"
+        ),
+        InlineKeyboardButton(
+            "🎵 Мусиқӣ MP3",
+            callback_data=f"a|mp3|{job_id}"
+        )
+    )
+
+    return keyboard
+
+
+def video_quality_keyboard(job_id):
     keyboard = InlineKeyboardMarkup(row_width=2)
 
     keyboard.add(
@@ -126,20 +139,13 @@ def quality_keyboard(job_id):
         InlineKeyboardButton(
             "1080p",
             callback_data=f"q|1080|{job_id}"
-        ),
+        )
     )
 
     keyboard.add(
         InlineKeyboardButton(
             "⭐ Баландтарин сифат",
             callback_data=f"q|best|{job_id}"
-        )
-    )
-
-    keyboard.add(
-        InlineKeyboardButton(
-            "🎵 MP3 то 320 kbps",
-            callback_data=f"a|mp3|{job_id}"
         )
     )
 
@@ -165,11 +171,12 @@ def start(message):
         message.chat.id,
         "👋 Хуш омадед ба TurboSave!\n\n"
         "📸 Instagram — акс ва видео\n"
-        "🎬 YouTube — видео\n"
-        "🎵 YouTube — MP3\n"
         "🎬 TikTok — видео\n"
-        "📥 Facebook, X ва Pinterest — маводи дастрас\n\n"
-        "🔗 Ссылкаи маводи иҷозатдодашударо фиристед.",
+        "📥 Facebook — маводи дастрас\n"
+        "🐦 X — видео\n"
+        "📌 Pinterest — акс ва видео\n\n"
+        "🔗 Ссылкаи маводро фиристед.\n\n"
+        "🎬 Видео ё 🎵 MP3-ро худатон интихоб мекунед.",
         reply_markup=keyboard
     )
 
@@ -184,11 +191,11 @@ def help_command(message):
         message,
         "📌 Тарзи истифода:\n\n"
         "1. Ссылка фиристед.\n"
-        "2. Сифати видеоро интихоб кунед.\n"
-        "3. Барои аудио MP3-ро пахш кунед.\n"
+        "2. Видео ё MP3-ро интихоб кунед.\n"
+        "3. Барои видео сифатро интихоб кунед.\n"
         "4. Файлро қабул кунед.\n\n"
-        "⚠️ Танҳо маводи иҷозатдодашударо зеркашӣ кунед.\n"
-        "📦 Андозаи максималӣ: 45 MB"
+        "📦 Ҳадди файл: 45 MB\n"
+        "⚠️ Танҳо маводи иҷозатдодашударо зеркашӣ кунед."
     )
 
 
@@ -216,7 +223,8 @@ def receive_link(message):
     if not valid_url(url):
         bot.reply_to(
             message,
-            "❌ Ссылка дуруст нест ё сайт дастгирӣ намешавад."
+            "❌ Ссылка дуруст нест ё сайт дастгирӣ намешавад.\n\n"
+            "YouTube дар ин версия дастгирӣ намешавад."
         )
         return
 
@@ -232,13 +240,13 @@ def receive_link(message):
         message,
         f"✅ Ссылка қабул шуд!\n\n"
         f"🌐 Платформа: {platform}\n\n"
-        f"📥 Сифати дилхоҳро интихоб кунед:",
-        reply_markup=quality_keyboard(job_id)
+        f"📥 Чиро зеркашӣ мекунед?",
+        reply_markup=mode_keyboard(job_id)
     )
 
 
 # =====================================
-# FIND DOWNLOADED FILE
+# FIND FILE
 # =====================================
 
 def find_file(folder, mode):
@@ -250,12 +258,8 @@ def find_file(folder, mode):
             lower = filename.lower()
 
             if lower.endswith((
-                ".part",
-                ".ytdl",
-                ".json",
-                ".description",
-                ".vtt",
-                ".srt"
+                ".part", ".ytdl", ".json",
+                ".description", ".vtt", ".srt"
             )):
                 continue
 
@@ -341,7 +345,6 @@ def download_media(url, quality, folder):
 
         if quality == "best":
             fmt = "bestvideo+bestaudio/best"
-
         else:
             fmt = (
                 f"bestvideo[height<={quality}]+bestaudio/"
@@ -362,10 +365,7 @@ def download_media(url, quality, folder):
         }
 
     with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(
-            url,
-            download=True
-        )
+        info = ydl.extract_info(url, download=True)
 
         if not info:
             raise ValueError("Мавод дастрас нест.")
@@ -387,30 +387,15 @@ def download_media(url, quality, folder):
 def friendly_error(error):
     message = str(error).lower()
 
-    # YouTube bot check
-    if (
-        "sign in to confirm" in message
-        or "not a bot" in message
-    ):
-        return (
-            "⚠️ YouTube зеркаширо аз сервер маҳдуд кардааст.\n\n"
-            "Ин мушкили FFmpeg нест.\n"
-            "Лутфан баъдтар аз нав санҷед."
-        )
-
-    # Instagram Story restriction
     if (
         "instagram:story" in message
         or "you need to log in to access this content" in message
     ):
         return (
-            "🔒 Instagram барои ин Story воридшавиро талаб мекунад.\n\n"
-            "Ҳатто агар аккаунт Public бошад, сервер метавонад "
-            "ба Story дастрасӣ надошта бошад.\n\n"
-            "📌 Видео ё Reels-и оммавиро санҷед."
+            "🔒 Instagram барои дидани ин Story иҷозат талаб мекунад.\n\n"
+            "📌 Видео ё Reels-и дастраси оммавиро санҷед."
         )
 
-    # Other login restrictions
     if (
         "private" in message
         or "login required" in message
@@ -418,39 +403,30 @@ def friendly_error(error):
         or "cookies" in message
     ):
         return (
-            "🔒 Ин мавод дастрас нест ё барои дидани он "
-            "иҷозат талаб мекунад."
+            "🔒 Ин мавод дастрас нест ё иҷозат талаб мекунад."
         )
 
-    # FFmpeg
-    if (
-        "ffmpeg" in message
-        or "ffprobe" in message
-    ):
+    if "ffmpeg" in message or "ffprobe" in message:
         return (
-            "❌ Дар коркарди файл мушкили FFmpeg пайдо шуд.\n"
-            "Танзимоти GitHub Actions-ро санҷед."
+            "❌ Дар коркарди файл мушкили FFmpeg пайдо шуд."
         )
 
-    # File size
     if (
         "too large" in message
         or "max_filesize" in message
         or "file is larger" in message
     ):
         return (
-            "📦 Файл аз ҳадди 45 MB калон аст.\n"
+            "📦 Файл аз 45 MB калон аст.\n"
             "Сифати пасттарро интихоб кунед."
         )
 
-    # Unsupported URL
     if (
         "unsupported url" in message
         or "no suitable extractor" in message
     ):
-        return "❌ Ин ссылка ҳоло дастгирӣ намешавад."
+        return "❌ Ин ссылка дастгирӣ намешавад."
 
-    # Network error
     if (
         "unable to download" in message
         or "http error" in message
@@ -472,7 +448,8 @@ def friendly_error(error):
 
 @bot.callback_query_handler(
     func=lambda call: (
-        call.data.startswith("q|")
+        call.data.startswith("v|")
+        or call.data.startswith("q|")
         or call.data.startswith("a|")
     )
 )
@@ -480,6 +457,7 @@ def download_callback(call):
 
     status = None
     job_id = None
+    action = None
 
     try:
         parts = call.data.split("|")
@@ -491,14 +469,14 @@ def download_callback(call):
             )
             return
 
-        action, quality, job_id = parts
+        action, choice, job_id = parts
 
         job = jobs.get(job_id)
 
         if not job:
             bot.answer_callback_query(
                 call.id,
-                "Ссылка кӯҳна шудааст. Ссылкаро аз нав фиристед."
+                "Ссылка кӯҳна шудааст. Аз нав фиристед."
             )
             return
 
@@ -509,14 +487,39 @@ def download_callback(call):
             )
             return
 
-        if action == "a" and quality != "mp3":
+        # User chooses video
+        if action == "v":
+
+            if choice != "video":
+                bot.answer_callback_query(
+                    call.id,
+                    "Интихоб нодуруст аст."
+                )
+                return
+
             bot.answer_callback_query(
                 call.id,
-                "Формати аудио дастгирӣ намешавад."
+                "🎬 Сифати видеоро интихоб кунед."
+            )
+
+            bot.edit_message_reply_markup(
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=video_quality_keyboard(job_id)
+            )
+
+            return
+
+        # Audio choice
+        if action == "a" and choice != "mp3":
+            bot.answer_callback_query(
+                call.id,
+                "Формати аудио нодуруст аст."
             )
             return
 
-        if action == "q" and quality not in (
+        # Video quality choice
+        if action == "q" and choice not in (
             "360", "720", "1080", "best"
         ):
             bot.answer_callback_query(
@@ -536,7 +539,7 @@ def download_callback(call):
             "TurboSave файлро омода мекунад."
         )
 
-        mode = "mp3" if action == "a" else quality
+        mode = "mp3" if action == "a" else choice
 
         with tempfile.TemporaryDirectory() as folder:
 
@@ -593,16 +596,12 @@ def download_callback(call):
                 call.message.chat.id,
                 friendly_error(error)
             )
-
         except Exception as send_error:
-            print(
-                "TELEGRAM SEND ERROR:",
-                repr(send_error)
-            )
+            print("TELEGRAM SEND ERROR:", repr(send_error))
 
     finally:
 
-        if job_id:
+        if job_id and action in ("q", "a"):
             jobs.pop(job_id, None)
 
         if status:
