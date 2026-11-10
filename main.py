@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import subprocess
 import ipaddress
+import traceback
 import requests
 import telebot
 import yt_dlp
@@ -27,8 +28,12 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-MAX_SIZE = 200 * 1024 * 1024
-MAX_INPUT_SIZE = 100 * 1024 * 1024
+# Telegram sending limit: use a conservative limit
+MAX_SIZE = 45 * 1024 * 1024
+
+# Telegram cloud Bot API download limit for received files
+MAX_INPUT_SIZE = 20 * 1024 * 1024
+
 AUDD_MAX_SIZE = 100 * 1024 * 1024
 
 ALLOWED_DOMAINS = (
@@ -157,16 +162,57 @@ def normalize_text(value):
 
 
 def find_file(folder, extension=None):
+    if not os.path.isdir(folder):
+        return None
+
+    ignored = (
+        ".part",
+        ".ytdl",
+        ".temp",
+        ".json",
+        ".description",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".vtt",
+        ".srt"
+    )
+
+    candidates = []
+
     for name in os.listdir(folder):
         path = os.path.join(folder, name)
 
         if not os.path.isfile(path):
             continue
 
-        if extension is None or name.lower().endswith(extension):
-            return path
+        lower_name = name.lower()
 
-    return None
+        if lower_name.endswith(ignored):
+            continue
+
+        if extension:
+            if not lower_name.endswith(extension.lower()):
+                continue
+        else:
+            if not lower_name.endswith(
+                (".mp4", ".mkv", ".webm", ".mov", ".mp3", ".m4a", ".ogg")
+            ):
+                continue
+
+        if get_size(path) > 0:
+            candidates.append(path)
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: get_size(item),
+        reverse=True
+    )
+
+    return candidates[0]
 
 
 # =====================================
@@ -201,6 +247,7 @@ def convert_to_mp3(source, destination, seconds=12):
     )
 
     if result.returncode != 0:
+        print("FFmpeg error:", result.stderr.decode(errors="ignore")[-2000:])
         raise RuntimeError("Табдили MP3 иҷро нашуд.")
 
     if not os.path.isfile(destination):
@@ -215,10 +262,14 @@ def convert_to_mp3(source, destination, seconds=12):
 
 def recognize_audio_file(path):
     if not AUDD_TOKEN:
-        return {"error": "AUDD_API_TOKEN дар GitHub Secrets нест."}
+        return {
+            "error": "AUDD_API_TOKEN дар GitHub Secrets нест."
+        }
 
     if get_size(path) > AUDD_MAX_SIZE:
-        return {"error": "Файл барои AudD калон аст."}
+        return {
+            "error": "Файл барои AudD калон аст."
+        }
 
     try:
         with open(path, "rb") as audio:
@@ -228,7 +279,9 @@ def recognize_audio_file(path):
                     "api_token": AUDD_TOKEN,
                     "return": "spotify,apple_music"
                 },
-                files={"file": audio},
+                files={
+                    "file": audio
+                },
                 timeout=90
             )
 
@@ -236,17 +289,24 @@ def recognize_audio_file(path):
         data = response.json()
 
         if data.get("status") != "success":
-            return {"error": "AudD хато баргардонд."}
+            print("AudD response:", data)
+            return {
+                "error": "AudD сурудро муайян карда натавонист."
+            }
 
         return data.get("result")
 
     except requests.RequestException as error:
-        print("AudD request error:", error)
-        return {"error": "Ба AudD пайваст нашуд."}
+        print("AudD request error:", repr(error))
+        return {
+            "error": "Ба AudD пайваст нашуд."
+        }
 
     except Exception as error:
-        print("AudD error:", error)
-        return {"error": "Шинохти мусиқӣ иҷро нашуд."}
+        print("AudD error:", repr(error))
+        return {
+            "error": "Шинохти мусиқӣ иҷро нашуд."
+        }
 
 
 # =====================================
@@ -309,6 +369,10 @@ def music_message(song):
 
 def download_jamendo_music(title, artist, folder):
     if not JAMENDO_CLIENT_ID:
+        print("JAMENDO_CLIENT_ID missing.")
+        return None
+
+    if not title or not artist:
         return None
 
     try:
@@ -367,19 +431,23 @@ def download_jamendo_music(title, artist, folder):
             output = os.path.join(folder, "jamendo.mp3")
             total = 0
 
-            with open(output, "wb") as file:
-                for chunk in result.iter_content(65536):
-                    if not chunk:
-                        continue
+            try:
+                with open(output, "wb") as file:
+                    for chunk in result.iter_content(65536):
+                        if not chunk:
+                            continue
 
-                    total += len(chunk)
+                        total += len(chunk)
 
-                    if total > MAX_SIZE:
-                        file.close()
-                        remove_file(output)
-                        return None
+                        if total > MAX_SIZE:
+                            raise RuntimeError(
+                                "Jamendo файл аз ҳад калон аст."
+                            )
 
-                    file.write(chunk)
+                        file.write(chunk)
+
+            finally:
+                result.close()
 
             if total > 1000:
                 return output
@@ -387,13 +455,14 @@ def download_jamendo_music(title, artist, folder):
             remove_file(output)
 
     except Exception as error:
-        print("Jamendo error:", error)
+        print("Jamendo error:", repr(error))
+        traceback.print_exc()
 
     return None
 
 
 # =====================================
-# RECOGNIZE AND SEND
+# RECOGNIZE AND SEND MUSIC
 # =====================================
 
 def recognize_and_send_music(chat_id, source_path):
@@ -441,25 +510,33 @@ def recognize_and_send_music(chat_id, source_path):
         )
 
         if found:
+            if get_size(found) > MAX_SIZE:
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Файли мусиқӣ хеле калон аст."
+                )
+                return
+
             with open(found, "rb") as audio:
                 bot.send_audio(
                     chat_id,
                     audio,
-                    title=title,
-                    performer=artist,
+                    title=title[:64],
+                    performer=artist[:64],
                     caption="🎵 Версияи иҷозатдодашуда аз Jamendo"
                 )
+
         else:
             bot.send_message(
                 chat_id,
                 "ℹ️ Дар Jamendo нусхаи иҷозатдодашуда ёфт нашуд.\n\n"
                 "Метавонӣ аз пайвандҳои SoundCloud ё Bandcamp "
-                "сурудро ҷустуҷӯ кунӣ. Зеркашӣ танҳо бо иҷозати "
-                "соҳиби суруд ё платформа мумкин аст."
+                "сурудро ҷустуҷӯ кунӣ."
             )
 
     except Exception as error:
-        print("Recognition error:", error)
+        print("Recognition error:", repr(error))
+        traceback.print_exc()
 
         bot.send_message(
             chat_id,
@@ -475,34 +552,56 @@ def recognize_and_send_music(chat_id, source_path):
 # =====================================
 
 def download_video(url, quality, folder):
+    if not check_ffmpeg():
+        raise RuntimeError("FFmpeg насб нашудааст.")
+
     output = os.path.join(
         folder,
         "%(title).80s.%(ext)s"
     )
 
     formats = {
-        "360": "best[height<=360]/best",
-        "480": "best[height<=480]/best",
-        "720": "best[height<=720]/best",
-        "1080": "best[height<=1080]/best"
+        "360": "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
+        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+        "1080": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
     }
 
     options = {
         "outtmpl": output,
-        "format": formats.get(quality, "best"),
+        "format": formats.get(quality, formats["720"]),
         "merge_output_format": "mp4",
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
+        "quiet": False,
+        "no_warnings": False,
         "max_filesize": MAX_SIZE,
-        "socket_timeout": 30,
-        "retries": 2
+        "socket_timeout": 40,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 2,
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4"
+            }
+        ]
     }
 
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
 
-    return find_file(folder)
+    path = find_file(folder, ".mp4")
+
+    if not path:
+        path = find_file(folder)
+
+    if not path:
+        raise RuntimeError("Файли видео сохта нашуд.")
+
+    if get_size(path) > MAX_SIZE:
+        raise RuntimeError("Ҳаҷми видео аз ҳадди иҷозатшуда зиёд аст.")
+
+    return path
 
 
 # =====================================
@@ -519,11 +618,12 @@ def download_audio(url, folder):
         "outtmpl": output,
         "format": "bestaudio/best",
         "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_INPUT_SIZE,
-        "socket_timeout": 30,
-        "retries": 2,
+        "quiet": False,
+        "no_warnings": False,
+        "max_filesize": MAX_SIZE,
+        "socket_timeout": 40,
+        "retries": 3,
+        "fragment_retries": 3,
         "postprocessors": [
             {
                 "key": "FFmpegExtractAudio",
@@ -536,7 +636,15 @@ def download_audio(url, folder):
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
 
-    return find_file(folder, ".mp3")
+    path = find_file(folder, ".mp3")
+
+    if not path:
+        raise RuntimeError("Файли MP3 сохта нашуд.")
+
+    if get_size(path) > MAX_SIZE:
+        raise RuntimeError("Ҳаҷми MP3 аз ҳадди иҷозатшуда зиёд аст.")
+
+    return path
 
 
 # =====================================
@@ -630,6 +738,18 @@ def callback_handler(call):
                 "Акнун пайванди видеоро фирист."
             )
 
+        else:
+            bot.send_message(
+                chat_id,
+                "❌ Ин интихоб дастгирӣ намешавад."
+            )
+
+    else:
+        bot.answer_callback_query(
+            call.id,
+            "Ин тугма дигар фаъол нест."
+        )
+
 
 # =====================================
 # RECEIVE LINKS
@@ -637,7 +757,8 @@ def callback_handler(call):
 
 @bot.message_handler(
     content_types=["text"],
-    func=lambda message: not message.text.startswith("/")
+    func=lambda message: bool(message.text)
+    and not message.text.startswith("/")
 )
 def receive_link(message):
     chat_id = message.chat.id
@@ -661,21 +782,16 @@ def receive_link(message):
         )
 
         if mode == "music":
-            path = download_audio(url, folder)
+            path = download_audio(
+                url,
+                folder
+            )
 
             if not path:
-                bot.send_message(
-                    chat_id,
-                    "❌ Мусиқӣ гирифта нашуд."
-                )
-                return
+                raise RuntimeError("Мусиқӣ гирифта нашуд.")
 
-            if get_size(path) > MAX_INPUT_SIZE:
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Файли мусиқӣ хеле калон аст."
-                )
-                return
+            if get_size(path) > MAX_SIZE:
+                raise RuntimeError("Файли мусиқӣ хеле калон аст.")
 
             with open(path, "rb") as audio:
                 bot.send_audio(
@@ -684,7 +800,10 @@ def receive_link(message):
                     caption="🎵 TurboSave MP3"
                 )
 
-            recognize_and_send_music(chat_id, path)
+            recognize_and_send_music(
+                chat_id,
+                path
+            )
 
         else:
             quality = mode.replace("video_", "")
@@ -696,36 +815,31 @@ def receive_link(message):
             )
 
             if not path:
-                bot.send_message(
-                    chat_id,
-                    "❌ Видео ёфт нашуд."
-                )
-                return
+                raise RuntimeError("Видео ёфт нашуд.")
 
             size = get_size(path)
 
             if size > MAX_SIZE:
-                bot.send_message(
-                    chat_id,
-                    "⚠️ Ҳаҷми видео аз 45 MB зиёд аст."
+                raise RuntimeError(
+                    "Ҳаҷми видео аз ҳадди иҷозатшуда зиёд аст."
                 )
-                return
 
             with open(path, "rb") as video:
                 bot.send_video(
                     chat_id,
                     video,
-                    caption=f"📥 TurboSave | {quality}p"
+                    caption=f"📥 TurboSave | {quality}p",
+                    supports_streaming=True
                 )
 
     except Exception as error:
-        print("Download error:", error)
+        print("DOWNLOAD ERROR:", repr(error))
+        traceback.print_exc()
 
         bot.send_message(
             chat_id,
             "❌ Зеркашӣ иҷро нашуд.\n\n"
-            "Мумкин аст сайт дастрас набошад, "
-            "формат дастгирӣ нашавад ё файл калон бошад."
+            f"Сабаб: {str(error)[:600]}"
         )
 
     finally:
@@ -770,20 +884,42 @@ def receive_media(message):
     folder = tempfile.mkdtemp(prefix="telegram_media_")
 
     try:
+        file_info = bot.get_file(media.file_id)
+
+        extension = os.path.splitext(
+            file_info.file_path
+        )[1].lower()
+
+        allowed_extensions = (
+            ".mp3",
+            ".m4a",
+            ".aac",
+            ".ogg",
+            ".oga",
+            ".wav",
+            ".flac",
+            ".mp4",
+            ".mkv",
+            ".webm",
+            ".mov",
+            ".3gp"
+        )
+
+        if extension not in allowed_extensions:
+            bot.send_message(
+                chat_id,
+                "❌ Ин навъи файл дастгирӣ намешавад."
+            )
+            return
+
         bot.send_message(
             chat_id,
             "🔎 Файл қабул шуд. Мусиқиро меҷӯям..."
         )
 
-        file_info = bot.get_file(media.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-
-        extension = os.path.splitext(
+        downloaded = bot.download_file(
             file_info.file_path
-        )[1]
-
-        if not extension:
-            extension = ".bin"
+        )
 
         source = os.path.join(
             folder,
@@ -806,7 +942,8 @@ def receive_media(message):
         )
 
     except Exception as error:
-        print("Media receive error:", error)
+        print("MEDIA ERROR:", repr(error))
+        traceback.print_exc()
 
         bot.send_message(
             chat_id,
