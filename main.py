@@ -1,8 +1,6 @@
 
 import os
-import re
 import uuid
-import shutil
 import tempfile
 import ipaddress
 from urllib.parse import urlparse
@@ -11,9 +9,9 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 
-# =========================
+# =====================================
 # TURBOSAVE SETTINGS
-# =========================
+# =====================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -23,27 +21,41 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 MAX_SIZE = 45 * 1024 * 1024
-
-# Temporary download jobs
 jobs = {}
 
-# =========================
+ALLOWED_DOMAINS = (
+    "instagram.com",
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "facebook.com",
+    "fb.watch",
+    "twitter.com",
+    "x.com",
+    "pinterest.com",
+)
+
+# =====================================
 # URL VALIDATION
-# =========================
+# =====================================
 
 def valid_url(url):
     try:
         parsed = urlparse(url)
+        host = parsed.hostname
 
         if parsed.scheme not in ("http", "https"):
             return False
 
-        host = parsed.hostname
-
-        if not host or "." not in host:
+        if not host:
             return False
 
-        if host.lower() in ("localhost",):
+        host = host.lower()
+
+        if not any(
+            host == domain or host.endswith("." + domain)
+            for domain in ALLOWED_DOMAINS
+        ):
             return False
 
         try:
@@ -60,7 +72,7 @@ def valid_url(url):
 
 
 def get_platform(url):
-    host = urlparse(url).netloc.lower()
+    host = urlparse(url).hostname.lower()
 
     platforms = {
         "instagram.com": "Instagram",
@@ -71,19 +83,59 @@ def get_platform(url):
         "fb.watch": "Facebook",
         "twitter.com": "X",
         "x.com": "X",
-        "pinterest.com": "Pinterest"
+        "pinterest.com": "Pinterest",
     }
 
     for domain, name in platforms.items():
         if host == domain or host.endswith("." + domain):
             return name
 
-    return "Дигар сайтҳо"
+    return "Дигар"
 
 
-# =========================
-# START COMMAND
-# =========================
+# =====================================
+# KEYBOARDS
+# =====================================
+
+def quality_keyboard(job_id):
+
+    keyboard = InlineKeyboardMarkup(row_width=2)
+
+    keyboard.add(
+        InlineKeyboardButton(
+            "360p",
+            callback_data=f"q|360|{job_id}"
+        ),
+        InlineKeyboardButton(
+            "720p",
+            callback_data=f"q|720|{job_id}"
+        ),
+        InlineKeyboardButton(
+            "1080p",
+            callback_data=f"q|1080|{job_id}"
+        ),
+    )
+
+    keyboard.add(
+        InlineKeyboardButton(
+            "⭐ Баландтарин сифат",
+            callback_data=f"q|best|{job_id}"
+        )
+    )
+
+    keyboard.add(
+        InlineKeyboardButton(
+            "🎵 MP3 320 kbps",
+            callback_data=f"a|mp3|{job_id}"
+        )
+    )
+
+    return keyboard
+
+
+# =====================================
+# START
+# =====================================
 
 @bot.message_handler(commands=["start"])
 def start(message):
@@ -100,16 +152,18 @@ def start(message):
     bot.send_message(
         message.chat.id,
         "👋 Хуш омадед ба TurboSave!\n\n"
-        "📸 Видео ва аксҳоро аз манбаъҳои "
-        "дастгиришаванда қабул мекунем.\n\n"
+        "📸 Instagram — акс ва видео\n"
+        "🎵 YouTube — MP3\n"
+        "🎬 YouTube — видео\n"
+        "🎵 TikTok — видео\n\n"
         "🔗 Ссылкаи маводи иҷозатдодашударо фиристед.",
         reply_markup=keyboard
     )
 
 
-# =========================
-# HELP COMMAND
-# =========================
+# =====================================
+# HELP
+# =====================================
 
 @bot.message_handler(commands=["help"])
 def help_command(message):
@@ -117,17 +171,28 @@ def help_command(message):
     bot.reply_to(
         message,
         "📌 Тарзи истифода:\n\n"
-        "1. Ссылкаро фиристед.\n"
-        "2. Сифатро интихоб кунед.\n"
-        "3. Бот маводи дастрасро месанҷад.\n"
-        "4. Агар дастгирӣ шавад, файлро мегиред.\n\n"
-        "⚠️ Танҳо маводи иҷозатдодашударо истифода баред."
+        "1. Ссылка фиристед.\n"
+        "2. Сифати видеоро интихоб кунед.\n"
+        "3. Барои аудио MP3-ро пахш кунед.\n"
+        "4. Файлро қабул кунед.\n\n"
+        "⚠️ Танҳо маводи иҷозатдодашударо зеркашӣ кунед."
     )
 
 
-# =========================
+@bot.callback_query_handler(func=lambda call: call.data == "help")
+def help_button(call):
+
+    bot.answer_callback_query(call.id)
+
+    bot.send_message(
+        call.message.chat.id,
+        "🔗 Лутфан ссылкаи видео ё аксро фиристед."
+    )
+
+
+# =====================================
 # RECEIVE LINK
-# =========================
+# =====================================
 
 @bot.message_handler(
     content_types=["text"],
@@ -140,8 +205,7 @@ def receive_link(message):
     if not valid_url(url):
         bot.reply_to(
             message,
-            "❌ Ссылка дуруст нест.\n"
-            "Лутфан пайванди HTTP ё HTTPS фиристед."
+            "❌ Ссылка дуруст нест ё сайт дастгирӣ намешавад."
         )
         return
 
@@ -154,109 +218,159 @@ def receive_link(message):
         "user": message.from_user.id
     }
 
-    keyboard = InlineKeyboardMarkup(row_width=2)
-
-    keyboard.add(
-        InlineKeyboardButton(
-            "360p",
-            callback_data=f"q|360|{job_id}"
-        ),
-        InlineKeyboardButton(
-            "720p",
-            callback_data=f"q|720|{job_id}"
-        ),
-        InlineKeyboardButton(
-            "1080p",
-            callback_data=f"q|1080|{job_id}"
-        )
-    )
-
-    keyboard.add(
-        InlineKeyboardButton(
-            "⭐ Баландтарин сифат",
-            callback_data=f"q|best|{job_id}"
-        )
-    )
-
     bot.reply_to(
         message,
         f"✅ Ссылка қабул шуд!\n\n"
-        f"🌐 Платформа: {platform}\n"
+        f"🌐 Платформа: {platform}\n\n"
         f"📥 Сифати дилхоҳро интихоб кунед:",
-        reply_markup=keyboard
+        reply_markup=quality_keyboard(job_id)
     )
 
 
-# =========================
-# DOWNLOAD MEDIA
-# =========================
+# =====================================
+# FIND DOWNLOADED FILE
+# =====================================
 
-def download_media(url, quality):
+def find_file(folder, info, mode):
 
-    if quality == "best":
-        fmt = "best[filesize<45M]/best"
+    candidates = []
+
+    for root, dirs, files in os.walk(folder):
+        for filename in files:
+
+            if filename.endswith(".part"):
+                continue
+
+            path = os.path.join(root, filename)
+
+            if os.path.isfile(path):
+                candidates.append(path)
+
+    if not candidates:
+        raise ValueError("Файл сохта нашуд")
+
+    if mode == "mp3":
+        mp3_files = [
+            p for p in candidates
+            if p.lower().endswith(".mp3")
+        ]
+
+        if mp3_files:
+            return mp3_files[0]
+
+        raise ValueError("MP3 сохта нашуд. FFmpeg-ро санҷед.")
+
+    final_files = [
+        p for p in candidates
+        if not p.lower().endswith((".webm", ".m4a", ".f4v"))
+    ]
+
+    if final_files:
+        candidates = final_files
+
+    return max(candidates, key=os.path.getsize)
+
+
+# =====================================
+# DOWNLOAD ENGINE
+# =====================================
+
+def download_media(url, quality, folder):
+
+    if quality == "mp3":
+
+        options = {
+            "format": "bestaudio/best",
+
+            "outtmpl": os.path.join(
+                folder, "%(id)s.%(ext)s"
+            ),
+
+            "noplaylist": True,
+            "max_filesize": MAX_SIZE,
+            "socket_timeout": 30,
+            "retries": 3,
+            "quiet": True,
+            "no_warnings": True,
+
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "320",
+                }
+            ],
+        }
+
     else:
-        fmt = (
-            f"best[height<={quality}]"
-            f"[filesize<45M]/"
-            f"best[height<={quality}]/best"
-        )
 
-    with tempfile.TemporaryDirectory() as folder:
+        if quality == "best":
+            fmt = "bestvideo+bestaudio/best"
+
+        else:
+            fmt = (
+                f"bestvideo[height<={quality}]+bestaudio/"
+                f"best[height<={quality}]/best"
+            )
 
         options = {
             "format": fmt,
-            "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
+
+            "outtmpl": os.path.join(
+                folder, "%(id)s.%(ext)s"
+            ),
+
+            "merge_output_format": "mp4",
             "noplaylist": True,
             "max_filesize": MAX_SIZE,
-            "socket_timeout": 20,
-            "retries": 2,
+            "socket_timeout": 30,
+            "retries": 3,
             "quiet": True,
             "no_warnings": True,
-            "ignoreerrors": False,
         }
 
-        with yt_dlp.YoutubeDL(options) as ydl:
+    with yt_dlp.YoutubeDL(options) as ydl:
 
-            info = ydl.extract_info(url, download=True)
+        info = ydl.extract_info(
+            url,
+            download=True
+        )
 
-            if not info:
-                raise ValueError("Мавод ёфт нашуд")
+        if not info:
+            raise ValueError("Мавод дастрас нест")
 
-            path = ydl.prepare_filename(info)
+    path = find_file(folder, info, quality)
 
-            if not os.path.isfile(path):
-                candidates = [
-                    os.path.join(folder, name)
-                    for name in os.listdir(folder)
-                    if os.path.isfile(os.path.join(folder, name))
-                ]
+    size = os.path.getsize(path)
 
-                if not candidates:
-                    raise ValueError("Файл сохта нашуд")
+    if size > MAX_SIZE:
+        raise ValueError("Файл аз 45 MB калон аст")
 
-                path = candidates[0]
-
-            size = os.path.getsize(path)
-
-            if size > MAX_SIZE:
-                raise ValueError("Файл аз ҳад калон аст")
-
-            # Keep temporary directory alive while sending
-            yield path
+    return path
 
 
-# =========================
-# QUALITY BUTTONS
-# =========================
+# =====================================
+# CALLBACK HANDLER
+# =====================================
 
 @bot.callback_query_handler(
-    func=lambda call: call.data.startswith("q|")
+    func=lambda call: (
+        call.data.startswith("q|")
+        or call.data.startswith("a|")
+    )
 )
-def quality_callback(call):
+def download_callback(call):
+
+    status = None
+    job_id = None
 
     try:
-        _, quality, job_id = call.data.split("|")
+
+        parts = call.data.split("|")
+
+        action = parts[0]
+        quality = parts[1]
+        job_id = parts[2]
 
         job = jobs.get(job_id)
 
@@ -274,104 +388,102 @@ def quality_callback(call):
             )
             return
 
+        if action == "a" and quality != "mp3":
+            raise ValueError("Ин формати аудио дастгирӣ намешавад")
+
         bot.answer_callback_query(
             call.id,
-            "Зеркашӣ оғоз шуд..."
+            "⏳ Зеркашӣ оғоз шуд..."
         )
 
         status = bot.send_message(
             call.message.chat.id,
-            "⏳ Лутфан интизор шавед..."
+            "⏳ Лутфан интизор шавед...\n"
+            "TurboSave файлро омода мекунад."
         )
 
-        try:
-            with tempfile.TemporaryDirectory() as folder:
+        mode = "mp3" if action == "a" else quality
 
-                options = {
-                    "format": (
-                        "best[filesize<45M]/best"
-                        if quality == "best"
-                        else
-                        f"best[height<={quality}]"
-                        f"[filesize<45M]/"
-                        f"best[height<={quality}]/best"
-                    ),
-                    "outtmpl": os.path.join(
-                        folder, "%(id)s.%(ext)s"
-                    ),
-                    "noplaylist": True,
-                    "max_filesize": MAX_SIZE,
-                    "socket_timeout": 20,
-                    "retries": 2,
-                    "quiet": True,
-                    "no_warnings": True,
-                }
+        with tempfile.TemporaryDirectory() as folder:
 
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    info = ydl.extract_info(
-                        job["url"],
-                        download=True
-                    )
-
-                    if not info:
-                        raise ValueError("Мавод дастрас нест")
-
-                    path = ydl.prepare_filename(info)
-
-                    if not os.path.isfile(path):
-                        files = os.listdir(folder)
-
-                        if not files:
-                            raise ValueError("Файл ёфт нашуд")
-
-                        path = os.path.join(folder, files[0])
-
-                    if os.path.getsize(path) > MAX_SIZE:
-                        raise ValueError(
-                            "Файл аз 45 MB калон аст"
-                        )
-
-                    ext = os.path.splitext(path)[1].lower()
-
-                    with open(path, "rb") as media:
-
-                        if ext in (
-                            ".jpg", ".jpeg", ".png", ".webp"
-                        ):
-                            bot.send_photo(
-                                call.message.chat.id,
-                                media
-                            )
-                        else:
-                            bot.send_document(
-                                call.message.chat.id,
-                                media,
-                                caption="✅ TurboSave"
-                            )
-
-            bot.delete_message(
-                status.chat.id,
-                status.message_id
+            path = download_media(
+                job["url"],
+                mode,
+                folder
             )
 
-        finally:
-            jobs.pop(job_id, None)
+            ext = os.path.splitext(path)[1].lower()
+
+            with open(path, "rb") as media:
+
+                if mode == "mp3":
+
+                    bot.send_audio(
+                        call.message.chat.id,
+                        media,
+                        title="TurboSave MP3",
+                        caption="🎵 TurboSave | MP3"
+                    )
+
+                elif ext in (".jpg", ".jpeg", ".png", ".webp"):
+
+                    bot.send_photo(
+                        call.message.chat.id,
+                        media,
+                        caption="📸 TurboSave"
+                    )
+
+                elif ext == ".mp4":
+
+                    bot.send_video(
+                        call.message.chat.id,
+                        media,
+                        caption="✅ TurboSave"
+                    )
+
+                else:
+
+                    bot.send_document(
+                        call.message.chat.id,
+                        media,
+                        caption="✅ TurboSave"
+                    )
+
+        bot.delete_message(
+            status.chat.id,
+            status.message_id
+        )
 
     except Exception as error:
 
-        print("DOWNLOAD ERROR:", str(error))
+        print("DOWNLOAD ERROR:", repr(error))
 
         bot.send_message(
             call.message.chat.id,
             "❌ Зеркашӣ иҷро нашуд.\n\n"
-            "Сабаб метавонад дастгирӣ нашудани сайт, "
-            "маҳдудияти дастрасӣ ё андозаи файл бошад."
+            "Мумкин аст FFmpeg, сайт ё формати файл "
+            "дастгирӣ нашавад, ё файл аз 45 MB калон бошад.\n\n"
+            "Лутфан баъдтар аз нав кӯшиш кунед."
         )
 
+    finally:
 
-# =========================
+        if job_id:
+            jobs.pop(job_id, None)
+
+        if status:
+            try:
+                bot.delete_message(
+                    status.chat.id,
+                    status.message_id
+                )
+            except Exception:
+                pass
+
+
+# =====================================
 # START BOT
-# =========================
+# =====================================
 
 print("TurboSave is running...")
 
