@@ -6,6 +6,8 @@ import asyncio
 import tempfile
 import mimetypes
 import urllib.request
+import logging
+
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -25,7 +27,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 
 
 # ==============================
@@ -39,6 +41,9 @@ MAX_SIZE = 200 * 1024 * 1024
 TELEGRAM_MAX_SIZE = 49 * 1024 * 1024
 
 DB_NAME = "bot_stats.db"
+
+DELETE_AFTER = 47 * 60 * 60
+DELETE_CHECK_INTERVAL = 60
 
 pending_urls = {}
 
@@ -56,6 +61,18 @@ MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 
 
 # ==============================
+# LOGGING
+# ==============================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ==============================
 # LANGUAGES
 # ==============================
 
@@ -68,11 +85,11 @@ TEXTS = {
         "downloading": "⏳ Боргирӣ сар шуд. Каме интизор шав...",
         "failed": "❌ Боргирӣ нашуд. Эҳтимол сайт дастгирӣ намешавад ё мавод хусусӣ аст.",
         "too_big": "❌ Андозаи файл аз ҳадди 200 МБ зиёд аст.",
-        "telegram_limit": "⚠️ Файл боргирӣ шуд, аммо аз ҳадди фиристодани Telegram (тақрибан 50 МБ) калонтар аст. Барои фиристодани чунин файл сервери махсус лозим мешавад.",
+        "telegram_limit": "⚠️ Файл аз ҳадди фиристодани Telegram калонтар аст.",
         "send_url": "🔗 Линки дурусти сайтро фирист.",
         "admin_only": "⛔ Ин фармон танҳо барои админ аст.",
-        "stats": "📊 ОМОРИ БОТ\n\n👥 Ҳамагӣ: {users}\n🟢 Имрӯз фаъол: {active}\n📥 Боргириҳо: {downloads}\n\n🌐 Забонҳо:\n🇹🇯 Тоҷикӣ: {tg}\n🇷🇺 Русӣ: {ru}\n🇬🇧 Англисӣ: {en}\n🇮🇷 Форсӣ: {fa}\n🇺🇿 Ӯзбекӣ: {uz}",
         "done": "✅ Тайёр шуд!",
+        "stats": "📊 ОМОРИ БОТ\n\n👥 Ҳамагӣ: {users}\n🟢 Имрӯз фаъол: {active}\n📥 Боргириҳо: {downloads}\n\n🌐 Забонҳо:\n🇹🇯 Тоҷикӣ: {tg}\n🇷🇺 Русӣ: {ru}\n🇬🇧 Англисӣ: {en}\n🇮🇷 Форсӣ: {fa}\n🇺🇿 Ӯзбекӣ: {uz}",
     },
     "ru": {
         "welcome": "👋 Добро пожаловать!\n\n🔗 Отправьте ссылку на видео или фото.",
@@ -82,11 +99,11 @@ TEXTS = {
         "downloading": "⏳ Загрузка началась. Подождите...",
         "failed": "❌ Не удалось загрузить. Возможно, сайт не поддерживается или материал закрытый.",
         "too_big": "❌ Размер файла превышает 200 МБ.",
-        "telegram_limit": "⚠️ Файл загружен, но превышает лимит отправки Telegram (около 50 МБ). Для отправки нужен специальный сервер.",
+        "telegram_limit": "⚠️ Файл превышает лимит отправки Telegram.",
         "send_url": "🔗 Отправьте правильную ссылку.",
         "admin_only": "⛔ Эта команда доступна только администратору.",
-        "stats": "📊 СТАТИСТИКА БОТА\n\n👥 Всего: {users}\n🟢 Активны сегодня: {active}\n📥 Загрузки: {downloads}\n\n🌐 Языки:\n🇹🇯 Таджикский: {tg}\n🇷🇺 Русский: {ru}\n🇬🇧 Английский: {en}\n🇮🇷 Персидский: {fa}\n🇺🇿 Узбекский: {uz}",
         "done": "✅ Готово!",
+        "stats": "📊 СТАТИСТИКА БОТА\n\n👥 Всего: {users}\n🟢 Активны сегодня: {active}\n📥 Загрузки: {downloads}\n\n🌐 Языки:\n🇹🇯 Таджикский: {tg}\n🇷🇺 Русский: {ru}\n🇬🇧 Английский: {en}\n🇮🇷 Персидский: {fa}\n🇺🇿 Узбекский: {uz}",
     },
     "en": {
         "welcome": "👋 Welcome!\n\n🔗 Send a video or photo link.",
@@ -96,11 +113,11 @@ TEXTS = {
         "downloading": "⏳ Download started. Please wait...",
         "failed": "❌ Download failed. The site may not be supported or the content may be private.",
         "too_big": "❌ File size exceeds 200 MB.",
-        "telegram_limit": "⚠️ The file was downloaded but exceeds Telegram's upload limit (about 50 MB). A special server is needed to send it.",
+        "telegram_limit": "⚠️ File exceeds Telegram's upload limit.",
         "send_url": "🔗 Please send a valid link.",
-        "admin_only": "⛔ This command is only for the administrator.",
-        "stats": "📊 BOT STATISTICS\n\n👥 Total users: {users}\n🟢 Active today: {active}\n📥 Downloads: {downloads}\n\n🌐 Languages:\n🇹🇯 Tajik: {tg}\n🇷🇺 Russian: {ru}\n🇬🇧 English: {en}\n🇮🇷 Persian: {fa}\n🇺🇿 Uzbek: {uz}",
+        "admin_only": "⛔ Admin only.",
         "done": "✅ Done!",
+        "stats": "📊 BOT STATISTICS\n\n👥 Total: {users}\n🟢 Active today: {active}\n📥 Downloads: {downloads}\n\n🌐 Languages:\n🇹🇯 Tajik: {tg}\n🇷🇺 Russian: {ru}\n🇬🇧 English: {en}\n🇮🇷 Persian: {fa}\n🇺🇿 Uzbek: {uz}",
     },
     "fa": {
         "welcome": "👋 خوش آمدید!\n\n🔗 لینک ویدیو یا عکس را بفرستید.",
@@ -110,11 +127,11 @@ TEXTS = {
         "downloading": "⏳ دانلود شروع شد. لطفاً صبر کنید...",
         "failed": "❌ دانلود انجام نشد. ممکن است سایت پشتیبانی نشود یا محتوا خصوصی باشد.",
         "too_big": "❌ حجم فایل بیشتر از ۲۰۰ مگابایت است.",
-        "telegram_limit": "⚠️ فایل دانلود شد اما از محدودیت ارسال تلگرام (حدود ۵۰ مگابایت) بزرگ‌تر است.",
+        "telegram_limit": "⚠️ فایل از محدودیت ارسال تلگرام بزرگ‌تر است.",
         "send_url": "🔗 لطفاً لینک معتبر ارسال کنید.",
         "admin_only": "⛔ این دستور فقط برای مدیر است.",
-        "stats": "📊 آمار ربات\n\n👥 کل کاربران: {users}\n🟢 فعال امروز: {active}\n📥 دانلودها: {downloads}\n\n🌐 زبان‌ها:\n🇹🇯 تاجیکی: {tg}\n🇷🇺 روسی: {ru}\n🇬🇧 انگلیسی: {en}\n🇮🇷 فارسی: {fa}\n🇺🇿 ازبکی: {uz}",
         "done": "✅ انجام شد!",
+        "stats": "📊 آمار ربات\n\n👥 کل کاربران: {users}\n🟢 فعال امروز: {active}\n📥 دانلودها: {downloads}\n\n🌐 زبان‌ها:\n🇹🇯 تاجیکی: {tg}\n🇷🇺 روسی: {ru}\n🇬🇧 انگلیسی: {en}\n🇮🇷 فارسی: {fa}\n🇺🇿 ازبکی: {uz}",
     },
     "uz": {
         "welcome": "👋 Xush kelibsiz!\n\n🔗 Video yoki rasm havolasini yuboring.",
@@ -124,11 +141,11 @@ TEXTS = {
         "downloading": "⏳ Yuklab olish boshlandi. Kuting...",
         "failed": "❌ Yuklab bo‘lmadi. Sayt qo‘llab-quvvatlanmasligi yoki material yopiq bo‘lishi mumkin.",
         "too_big": "❌ Fayl hajmi 200 MB dan oshdi.",
-        "telegram_limit": "⚠️ Fayl yuklandi, ammo Telegram yuborish chegarasidan (taxminan 50 MB) katta.",
+        "telegram_limit": "⚠️ Fayl Telegram yuborish chegarasidan katta.",
         "send_url": "🔗 To‘g‘ri havolani yuboring.",
         "admin_only": "⛔ Bu buyruq faqat administrator uchun.",
-        "stats": "📊 BOT STATISTIKASI\n\n👥 Jami: {users}\n🟢 Bugun faol: {active}\n📥 Yuklashlar: {downloads}\n\n🌐 Tillar:\n🇹🇯 Tojikcha: {tg}\n🇷🇺 Ruscha: {ru}\n🇬🇧 Inglizcha: {en}\n🇮🇷 Forscha: {fa}\n🇺🇿 O‘zbekcha: {uz}",
         "done": "✅ Tayyor!",
+        "stats": "📊 BOT STATISTIKASI\n\n👥 Jami: {users}\n🟢 Bugun faol: {active}\n📥 Yuklashlar: {downloads}\n\n🌐 Tillar:\n🇹🇯 Tojikcha: {tg}\n🇷🇺 Ruscha: {ru}\n🇬🇧 Inglizcha: {en}\n🇮🇷 Forscha: {fa}\n🇺🇿 O‘zbekcha: {uz}",
     },
 }
 
@@ -143,6 +160,7 @@ def db_connect():
 
 def init_db():
     with db_connect() as conn:
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -157,6 +175,16 @@ def init_db():
                 user_id INTEGER,
                 url TEXT,
                 created_at TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scheduled_deletions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                delete_at REAL NOT NULL,
+                UNIQUE(chat_id, message_id)
             )
         """)
 
@@ -254,6 +282,101 @@ def get_stats():
 
 
 # ==============================
+# AUTOMATIC MESSAGE DELETION
+# ==============================
+
+async def track_message(message):
+    if not message:
+        return
+
+    delete_at = (
+        datetime.now(timezone.utc).timestamp()
+        + DELETE_AFTER
+    )
+
+    try:
+        with db_connect() as conn:
+            conn.execute("""
+                INSERT OR IGNORE INTO scheduled_deletions
+                (chat_id, message_id, delete_at)
+                VALUES (?, ?, ?)
+            """, (
+                message.chat_id,
+                message.message_id,
+                delete_at
+            ))
+    except Exception:
+        logger.exception("Could not schedule message deletion")
+
+
+async def reply_tracked(message, text, **kwargs):
+    sent = await message.reply_text(text, **kwargs)
+    await track_message(sent)
+    return sent
+
+
+async def deletion_worker(application):
+    logger.info("Message deletion worker started")
+
+    while True:
+        now = datetime.now(timezone.utc).timestamp()
+
+        try:
+            with db_connect() as conn:
+                rows = conn.execute("""
+                    SELECT id, chat_id, message_id
+                    FROM scheduled_deletions
+                    WHERE delete_at <= ?
+                """, (now,)).fetchall()
+
+            for row_id, chat_id, message_id in rows:
+                try:
+                    await application.bot.delete_message(
+                        chat_id=chat_id,
+                        message_id=message_id
+                    )
+
+                    logger.info(
+                        "Message deleted: chat=%s message=%s",
+                        chat_id,
+                        message_id
+                    )
+
+                except BadRequest as error:
+                    logger.warning(
+                        "Message cannot be deleted: %s", error
+                    )
+
+                except TelegramError:
+                    logger.exception(
+                        "Temporary Telegram deletion error"
+                    )
+
+                    # Retry after five minutes
+                    with db_connect() as conn:
+                        conn.execute("""
+                            UPDATE scheduled_deletions
+                            SET delete_at = ?
+                            WHERE id = ?
+                        """, (
+                            now + 300,
+                            row_id
+                        ))
+                    continue
+
+                with db_connect() as conn:
+                    conn.execute(
+                        "DELETE FROM scheduled_deletions WHERE id = ?",
+                        (row_id,)
+                    )
+
+        except Exception:
+            logger.exception("Deletion worker error")
+
+        await asyncio.sleep(DELETE_CHECK_INTERVAL)
+
+
+# ==============================
 # KEYBOARDS
 # ==============================
 
@@ -304,7 +427,10 @@ def extract_url(text):
 
     parsed = urlparse(url)
 
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+    if parsed.scheme not in ("http", "https"):
+        return None
+
+    if not parsed.hostname:
         return None
 
     return url
@@ -317,10 +443,13 @@ def extract_url(text):
 def download_direct_image(url, folder):
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0"}
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        }
     )
 
-    with urllib.request.urlopen(request, timeout=25) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
+
         content_type = response.headers.get(
             "Content-Type", ""
         ).split(";")[0].lower()
@@ -336,7 +465,9 @@ def download_direct_image(url, folder):
         extension = Path(urlparse(url).path).suffix.lower()
 
         if extension not in IMAGE_EXTENSIONS:
-            extension = mimetypes.guess_extension(content_type) or ".jpg"
+            extension = mimetypes.guess_extension(
+                content_type
+            ) or ".jpg"
 
         if extension == ".jpe":
             extension = ".jpg"
@@ -355,8 +486,6 @@ def download_direct_image(url, folder):
                 total += len(chunk)
 
                 if total > MAX_SIZE:
-                    file.close()
-                    file_path.unlink(missing_ok=True)
                     raise ValueError("too_big")
 
                 file.write(chunk)
@@ -369,32 +498,42 @@ def download_direct_image(url, folder):
 # ==============================
 
 def download_media(url, quality, folder):
+
     if quality == "auto":
-        format_selector = "best/bestvideo+bestaudio"
+        format_selector = "best"
     else:
-        format_selector = (
-            f"best[height<={quality}]/best"
-        )
+        format_selector = f"best[height<={quality}]/best"
 
     options = {
         "format": format_selector,
         "outtmpl": str(Path(folder) / "%(id)s.%(ext)s"),
         "noplaylist": False,
         "quiet": True,
-        "no_warnings": True,
-        "ignoreerrors": True,
-        "retries": 2,
-        "fragment_retries": 2,
+        "no_warnings": False,
+        "ignoreerrors": False,
+        "retries": 5,
+        "extractor_retries": 3,
+        "fragment_retries": 5,
+        "socket_timeout": 30,
         "max_filesize": MAX_SIZE,
         "merge_output_format": "mp4",
         "overwrites": True,
     }
 
+    download_error = None
+
     try:
+        logger.info("Starting download: %s", url)
+
         with yt_dlp.YoutubeDL(options) as ydl:
             ydl.extract_info(url, download=True)
-    except Exception:
-        pass
+
+    except Exception as error:
+        download_error = str(error)
+
+        logger.exception(
+            "MEDIA DOWNLOAD FAILED: %s", url
+        )
 
     files = []
 
@@ -410,12 +549,21 @@ def download_media(url, quality, folder):
 
         files.append(path)
 
+    # Try direct image URL if extractor found nothing
     if not files:
-        direct_files = download_direct_image(url, folder)
-        files = [Path(p) for p in direct_files]
+        try:
+            direct_files = download_direct_image(url, folder)
+            files = [Path(p) for p in direct_files]
+
+        except Exception:
+            logger.exception(
+                "DIRECT IMAGE DOWNLOAD FAILED: %s", url
+            )
 
     if not files:
-        raise RuntimeError("No media found")
+        raise RuntimeError(
+            f"No media found. Downloader error: {download_error}"
+        )
 
     files.sort(key=lambda p: p.name)
 
@@ -423,6 +571,11 @@ def download_media(url, quality, folder):
 
     if total_size > MAX_SIZE:
         raise ValueError("too_big")
+
+    logger.info(
+        "Download successful: %s files",
+        len(files)
+    )
 
     return files
 
@@ -432,12 +585,14 @@ def download_media(url, quality, folder):
 # ==============================
 
 async def send_downloaded_files(message, files, language):
+
     text = TEXTS[language]
 
     sent = 0
     too_large = False
 
     for file_path in files:
+
         size = file_path.stat().st_size
 
         if size > TELEGRAM_MAX_SIZE:
@@ -447,45 +602,60 @@ async def send_downloaded_files(message, files, language):
         suffix = file_path.suffix.lower()
 
         try:
+
             if suffix in {".jpg", ".jpeg", ".png"} and size <= 10 * 1024 * 1024:
+
                 with open(file_path, "rb") as media:
-                    await message.reply_photo(
+                    sent_message = await message.reply_photo(
                         photo=media,
                         caption=text["done"] if sent == 0 else None
                     )
 
             elif suffix in VIDEO_EXTENSIONS:
+
                 try:
                     with open(file_path, "rb") as media:
-                        await message.reply_video(
+                        sent_message = await message.reply_video(
                             video=media,
                             supports_streaming=True,
                             caption=text["done"] if sent == 0 else None
                         )
+
                 except TelegramError:
                     with open(file_path, "rb") as media:
-                        await message.reply_document(
+                        sent_message = await message.reply_document(
                             document=media,
                             caption=text["done"] if sent == 0 else None
                         )
 
             else:
+
                 with open(file_path, "rb") as media:
-                    await message.reply_document(
+                    sent_message = await message.reply_document(
                         document=media,
                         caption=text["done"] if sent == 0 else None
                     )
 
+            await track_message(sent_message)
             sent += 1
 
         except TelegramError:
-            continue
+            logger.exception(
+                "Telegram media sending failed: %s",
+                file_path
+            )
 
     if too_large:
-        await message.reply_text(text["telegram_limit"])
+        await reply_tracked(
+            message,
+            text["telegram_limit"]
+        )
 
     if sent == 0 and not too_large:
-        await message.reply_text(text["failed"])
+        await reply_tracked(
+            message,
+            text["failed"]
+        )
 
     return sent
 
@@ -495,13 +665,17 @@ async def send_downloaded_files(message, files, language):
 # ==============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
+
     save_user(user_id)
 
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         "🌐 Забон / Язык / Language / زبان / Til",
         reply_markup=language_keyboard()
     )
+
+    await track_message(msg)
 
 
 # ==============================
@@ -509,10 +683,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 
 async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+
+    msg = await update.message.reply_text(
         "🌐 Забони худро интихоб кун:",
         reply_markup=language_keyboard()
     )
+
+    await track_message(msg)
 
 
 # ==============================
@@ -520,18 +697,22 @@ async def language_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
 
     if user_id != ADMIN_ID:
         language = get_language(user_id)
-        await update.message.reply_text(
+
+        await reply_tracked(
+            update.message,
             TEXTS[language]["admin_only"]
         )
         return
 
     stats = get_stats()
 
-    await update.message.reply_text(
+    await reply_tracked(
+        update.message,
         TEXTS["tg"]["stats"].format(**stats)
     )
 
@@ -541,13 +722,16 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     query = update.callback_query
+
     user_id = query.from_user.id
     data = query.data
 
     await query.answer()
 
     if data.startswith("lang:"):
+
         language = data.split(":", 1)[1]
 
         if language not in TEXTS:
@@ -559,9 +743,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             TEXTS[language]["language"] + "\n\n" +
             TEXTS[language]["welcome"]
         )
+
         return
 
     if data.startswith("quality:"):
+
         language = get_language(user_id)
         quality = data.split(":", 1)[1]
 
@@ -578,7 +764,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         try:
+
             with tempfile.TemporaryDirectory() as folder:
+
                 files = await asyncio.to_thread(
                     download_media,
                     url,
@@ -596,17 +784,30 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     save_download(user_id, url)
 
         except ValueError as error:
+
             if str(error) == "too_big":
-                await query.message.reply_text(
+                await reply_tracked(
+                    query.message,
                     TEXTS[language]["too_big"]
                 )
             else:
-                await query.message.reply_text(
+                logger.exception("Download value error")
+
+                await reply_tracked(
+                    query.message,
                     TEXTS[language]["failed"]
                 )
 
         except Exception:
-            await query.message.reply_text(
+
+            logger.exception(
+                "DOWNLOAD FAILED FOR USER %s URL %s",
+                user_id,
+                url
+            )
+
+            await reply_tracked(
+                query.message,
                 TEXTS[language]["failed"]
             )
 
@@ -619,24 +820,45 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     user_id = update.effective_user.id
+
     save_user(user_id)
 
     language = get_language(user_id)
+
+    await track_message(update.message)
+
     url = extract_url(update.message.text)
 
     if not url:
-        await update.message.reply_text(
+        await reply_tracked(
+            update.message,
             TEXTS[language]["send_url"]
         )
         return
 
     pending_urls[user_id] = url
 
-    await update.message.reply_text(
+    msg = await update.message.reply_text(
         TEXTS[language]["quality"],
         reply_markup=quality_keyboard()
     )
+
+    await track_message(msg)
+
+
+# ==============================
+# APPLICATION STARTUP
+# ==============================
+
+async def post_init(application):
+
+    application.create_task(
+        deletion_worker(application)
+    )
+
+    logger.info("BOT STARTED SUCCESSFULLY")
 
 
 # ==============================
@@ -644,6 +866,7 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 
 def main():
+
     if not TOKEN:
         raise RuntimeError(
             "BOT_TOKEN is missing. Add it to GitHub Secrets."
@@ -651,14 +874,21 @@ def main():
 
     init_db()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("admin", stats_command))
 
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(
+        CallbackQueryHandler(callback_handler)
+    )
 
     app.add_handler(
         MessageHandler(
@@ -667,7 +897,7 @@ def main():
         )
     )
 
-    print("BOT IS RUNNING...")
+    logger.info("BOT IS RUNNING...")
 
     app.run_polling()
 
