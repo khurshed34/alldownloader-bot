@@ -39,8 +39,27 @@ MENU = ReplyKeyboardMarkup(
 
 user_modes = {}
 
-def get_video(url, folder, mode):
-    output = str(Path(folder) / "%(title).80s.%(ext)s")
+
+def validate_url(url):
+    pattern = r"^https?://(www\.)?(youtube\.com|youtu\.be)/"
+    return bool(re.match(pattern, url, re.IGNORECASE))
+
+
+def get_video_info(url):
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "socket_timeout": 25,
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def download_video(url, folder, mode):
+    output = str(Path(folder) / "%(title).70s.%(ext)s")
 
     options = {
         "outtmpl": output,
@@ -70,13 +89,15 @@ def get_video(url, folder, mode):
     with yt_dlp.YoutubeDL(options) as ydl:
         ydl.download([url])
 
-    files = list(Path(folder).glob("*"))
-    files = [f for f in files if f.is_file()]
+    files = [
+        f for f in Path(folder).iterdir()
+        if f.is_file() and not f.name.endswith(".part")
+    ]
 
     if not files:
         raise RuntimeError("Файл пайдо нашуд.")
 
-    return files[0]
+    return max(files, key=lambda f: f.stat().st_size)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,27 +115,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = message.text.strip()
 
-    if text == "🎬 YouTube Видео":
-        user_modes[user_id] = "video"
-        await message.reply_text("🔗 Суроғаи видеои YouTube-ро фиристед.")
-        return
+    choices = {
+        "🎬 YouTube Видео": "video",
+        "🎵 YouTube MP3": "mp3",
+        "📱 YouTube Shorts": "shorts",
+    }
 
-    if text == "🎵 YouTube MP3":
-        user_modes[user_id] = "mp3"
-        await message.reply_text("🔗 Суроғаи видеоро барои MP3 фиристед.")
-        return
-
-    if text == "📱 YouTube Shorts":
-        user_modes[user_id] = "shorts"
-        await message.reply_text("🔗 Суроғаи YouTube Shorts-ро фиристед.")
+    if text in choices:
+        user_modes[user_id] = choices[text]
+        await message.reply_text(
+            "🔗 Акнун пайванди YouTube-ро фиристед."
+        )
         return
 
     if text == "ℹ️ Дастурамал":
         await message.reply_text(
             "1️⃣ Навъи зеркаширо интихоб кунед.\n"
-            "2️⃣ Суроғаи видеоро фиристед.\n"
-            "3️⃣ Бот файлро мефиристад.\n\n"
-            "⚠️ Танҳо маводеро зеркашӣ кунед, ки ҳуқуқи истифода ё зеркашии онро доред.",
+            "2️⃣ Пайванди видеоро фиристед.\n"
+            "3️⃣ Бот маълумотро месанҷад ва файлро мефиристад.\n\n"
+            "⚠️ Танҳо маводеро истифода баред, ки ҳуқуқи зеркашии онро доред.",
             reply_markup=MENU,
         )
         return
@@ -123,44 +142,62 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not mode:
         await message.reply_text(
-            "Аввал аз меню навъи зеркаширо интихоб кунед.",
+            "Аввал аз меню хизматрасониро интихоб кунед.",
             reply_markup=MENU,
         )
         return
 
-    if not re.match(
-        r"^https?://(www\.)?(youtube\.com|youtu\.be)/",
-        text,
-        re.IGNORECASE,
-    ):
-        await message.reply_text("❌ Лутфан, пайванди дурусти YouTube фиристед.")
+    if not validate_url(text):
+        await message.reply_text(
+            "❌ Пайванди YouTube нодуруст аст."
+        )
         return
 
     user_modes[user_id] = None
-
-    status = await message.reply_text("⏳ Зеркашӣ оғоз шуд...")
+    status = await message.reply_text(
+        "🔎 Маълумоти видеоро месанҷам..."
+    )
 
     try:
+        info = await asyncio.to_thread(get_video_info, text)
+
+        title = info.get("title", "Бе ном")
+        duration = info.get("duration")
+
+        if duration:
+            duration_text = f"{duration // 60}:{duration % 60:02d}"
+        else:
+            duration_text = "Номаълум"
+
+        await status.edit_text(
+            f"✅ Видео ёфт шуд!\n\n"
+            f"🎬 Ном: {title[:200]}\n"
+            f"⏱ Давомнокӣ: {duration_text}\n\n"
+            f"⏳ Зеркашӣ оғоз шуд..."
+        )
+
         with tempfile.TemporaryDirectory() as folder:
             file_path = await asyncio.to_thread(
-                get_video, text, folder,
-                "mp3" if mode == "mp3" else "video"
+                download_video,
+                text,
+                folder,
+                "mp3" if mode == "mp3" else "video",
             )
 
-            await status.edit_text("📤 Файл ба Telegram фиристода мешавад...")
+            await status.edit_text("📤 Файл фиристода мешавад...")
 
             with open(file_path, "rb") as file:
                 if mode == "mp3":
                     await message.reply_audio(
                         audio=file,
-                        title=file_path.stem[:64],
+                        title=title[:64],
                         caption="🎵 Омода шуд!"
                     )
                 elif file_path.suffix.lower() == ".mp4":
                     await message.reply_video(
                         video=file,
                         caption="🎬 Омода шуд!",
-                        supports_streaming=True
+                        supports_streaming=True,
                     )
                 else:
                     await message.reply_document(
@@ -168,32 +205,44 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption="📁 Омода шуд!"
                     )
 
-            await status.delete()
+        await status.delete()
 
     except Exception as error:
-        logger.exception("Download error")
-        error_text = str(error)
+        logger.exception("YouTube error")
 
-        if "Sign in to confirm" in error_text or "not a bot" in error_text:
+        error_text = str(error).lower()
+
+        if "sign in to confirm" in error_text or "not a bot" in error_text:
             reason = (
-                "YouTube ин дархостро маҳдуд кард. "
-                "Ин видео ҳоло аз сервер дастрас нест."
+                "YouTube аз сервер тасдиқи воридшавиро талаб мекунад. "
+                "Ин видео аз ин сервер дастрас нест."
             )
-        elif "maximum file size" in error_text or "File is larger" in error_text:
-            reason = "Ҳаҷми видео аз ҳадди иҷозатшуда калон аст."
+        elif "ffmpeg" in error_text:
+            reason = "FFmpeg дастрас нест. Насби онро дар GitHub Actions санҷед."
+        elif "private video" in error_text:
+            reason = "Ин видео хусусӣ аст."
+        elif "video unavailable" in error_text:
+            reason = "Видео дастрас нест."
+        elif "maximum file size" in error_text:
+            reason = "Ҳаҷми файл аз ҳадди иҷозатшуда калон аст."
         else:
-            reason = "Зеркашӣ иҷро нашуд. Эҳтимол видео дастрас нест ё маҳдудият дорад."
+            reason = f"Хатои зеркашӣ: {str(error)[:700]}"
 
         await status.edit_text("❌ " + reason)
 
 
 async def main():
+    logger.info("yt-dlp version: %s", yt_dlp.version.__version__)
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+    )
 
     logger.info("YouTube Turbo Bot started")
+
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
