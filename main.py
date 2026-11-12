@@ -11,7 +11,7 @@ import requests
 import instaloader
 import yt_dlp
 
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -35,7 +35,10 @@ TOKEN = os.getenv("BOT_TOKEN")
 MAX_SIZE = 49 * 1024 * 1024
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+    )
 }
 
 logging.basicConfig(
@@ -43,11 +46,16 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("TurboSave")
 
 LANGUAGES = {
     "tg": {
-        "welcome": "👋 Салом! Ман TurboSave ҳастам.\n\n🔗 Пайванди видео ё суратро фирист.",
+        "welcome": (
+            "👋 Салом! Ман TurboSave ҳастам.\n\n"
+            "🔗 Пайванди видео ё суратро фирист.\n\n"
+            "📥 YouTube | TikTok | Instagram | Facebook\n"
+            "🎵 MP3 дастрас аст."
+        ),
         "language": "🌐 Забонро интихоб кунед:",
         "quality": "🎬 Сифати зеркаширо интихоб кунед:",
         "saved": "✅ Танзимот сабт шуд!",
@@ -56,12 +64,19 @@ LANGUAGES = {
         "done": "✅ Боргирӣ анҷом ёфт!",
         "failed": "❌ Боргирӣ нашуд.",
         "invalid": "❌ Пайванди дастгиришаванда фирист.",
-        "large": "❌ Андозаи файл аз ҳад зиёд аст.",
+        "large": "❌ Андозаи файл аз 49 MB зиёд аст.",
         "settings": "⚙️ Танзимот",
-        "choose": "Забон ва сифатро интихоб кунед."
+        "choose": "Забон ва сифати зеркаширо интихоб кунед.",
+        "help": "📌 Линкро фиристед, то бот онро тафтиш кунад.",
     },
+
     "ru": {
-        "welcome": "👋 Привет! Я TurboSave.\n\n🔗 Отправьте ссылку на видео или фото.",
+        "welcome": (
+            "👋 Привет! Я TurboSave.\n\n"
+            "🔗 Отправьте ссылку на видео или фото.\n\n"
+            "📥 YouTube | TikTok | Instagram | Facebook\n"
+            "🎵 Доступен MP3."
+        ),
         "language": "🌐 Выберите язык:",
         "quality": "🎬 Выберите качество загрузки:",
         "saved": "✅ Настройки сохранены!",
@@ -70,12 +85,19 @@ LANGUAGES = {
         "done": "✅ Загрузка завершена!",
         "failed": "❌ Не удалось скачать.",
         "invalid": "❌ Отправьте поддерживаемую ссылку.",
-        "large": "❌ Файл слишком большой.",
+        "large": "❌ Размер файла превышает 49 MB.",
         "settings": "⚙️ Настройки",
-        "choose": "Выберите язык и качество."
+        "choose": "Выберите язык и качество загрузки.",
+        "help": "📌 Отправьте ссылку, чтобы бот её проверил.",
     },
+
     "en": {
-        "welcome": "👋 Hello! I'm TurboSave.\n\n🔗 Send a video or photo link.",
+        "welcome": (
+            "👋 Hello! I'm TurboSave.\n\n"
+            "🔗 Send a video or photo link.\n\n"
+            "📥 YouTube | TikTok | Instagram | Facebook\n"
+            "🎵 MP3 available."
+        ),
         "language": "🌐 Choose your language:",
         "quality": "🎬 Choose download quality:",
         "saved": "✅ Settings saved!",
@@ -84,9 +106,10 @@ LANGUAGES = {
         "done": "✅ Download completed!",
         "failed": "❌ Download failed.",
         "invalid": "❌ Send a supported link.",
-        "large": "❌ File is too large.",
+        "large": "❌ File exceeds 49 MB.",
         "settings": "⚙️ Settings",
-        "choose": "Choose language and quality."
+        "choose": "Choose language and download quality.",
+        "help": "📌 Send a link for the bot to check.",
     }
 }
 
@@ -114,49 +137,88 @@ ALLOWED_DOMAINS = (
 # =====================================
 
 def language_keyboard():
+
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🇹🇯 Тоҷикӣ", callback_data="lang:tg"),
-            InlineKeyboardButton("🇷🇺 Русский", callback_data="lang:ru"),
+            InlineKeyboardButton(
+                "🇹🇯 Тоҷикӣ",
+                callback_data="lang:tg"
+            ),
+            InlineKeyboardButton(
+                "🇷🇺 Русский",
+                callback_data="lang:ru"
+            ),
         ],
         [
-            InlineKeyboardButton("🇬🇧 English", callback_data="lang:en")
+            InlineKeyboardButton(
+                "🇬🇧 English",
+                callback_data="lang:en"
+            )
         ]
     ])
 
 
 def settings_keyboard():
+
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🌐 Забон", callback_data="menu:language"),
-            InlineKeyboardButton("🎬 Сифат", callback_data="menu:quality"),
+            InlineKeyboardButton(
+                "🌐 Забон",
+                callback_data="menu:language"
+            ),
+            InlineKeyboardButton(
+                "🎬 Сифат",
+                callback_data="menu:quality"
+            ),
         ]
     ])
 
 
 def quality_keyboard():
+
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("Автоматӣ", callback_data="quality:best"),
-            InlineKeyboardButton("1080p", callback_data="quality:1080"),
+            InlineKeyboardButton(
+                "Автоматӣ",
+                callback_data="quality:best"
+            ),
+            InlineKeyboardButton(
+                "1080p",
+                callback_data="quality:1080"
+            ),
         ],
         [
-            InlineKeyboardButton("720p", callback_data="quality:720"),
-            InlineKeyboardButton("480p", callback_data="quality:480"),
+            InlineKeyboardButton(
+                "720p",
+                callback_data="quality:720"
+            ),
+            InlineKeyboardButton(
+                "480p",
+                callback_data="quality:480"
+            ),
         ],
         [
-            InlineKeyboardButton("360p", callback_data="quality:360"),
-            InlineKeyboardButton("🎵 MP3", callback_data="quality:mp3"),
+            InlineKeyboardButton(
+                "360p",
+                callback_data="quality:360"
+            ),
+            InlineKeyboardButton(
+                "🎵 MP3",
+                callback_data="quality:mp3"
+            ),
         ]
     ])
 
 
 def get_language(context):
+
     return context.user_data.get("language", "tg")
 
 
 def get_text(context, key):
+
     lang = get_language(context)
+
     return LANGUAGES[lang][key]
 
 
@@ -183,6 +245,7 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     query = update.callback_query
+
     await query.answer()
 
     data = query.data
@@ -225,44 +288,52 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["quality"] = quality
 
         await query.edit_message_text(
-            get_text(context, "saved") +
-            "\n\n🎬 " + QUALITIES[quality]
+            get_text(context, "saved")
+            + "\n\n🎬 "
+            + QUALITIES[quality],
+            reply_markup=settings_keyboard()
         )
 
 
 # =====================================
-# INSTAGRAM - ORIGINAL FUNCTION
+# COMMON DOWNLOAD FUNCTION
 # =====================================
 
 def download_file(url, path):
 
-    response = requests.get(
+    total = 0
+
+    with requests.get(
         url,
         headers=HEADERS,
         stream=True,
         timeout=40
-    )
+    ) as response:
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    total = 0
+        with open(path, "wb") as file:
 
-    with open(path, "wb") as f:
+            for chunk in response.iter_content(256 * 1024):
 
-        for chunk in response.iter_content(1024 * 256):
+                if not chunk:
+                    continue
 
-            if not chunk:
-                continue
+                total += len(chunk)
 
-            total += len(chunk)
+                if total > MAX_SIZE:
+                    raise ValueError(
+                        "Файл аз 49 MB калон аст."
+                    )
 
-            if total > MAX_SIZE:
-                raise ValueError("Андозаи файл аз ҳад зиёд аст.")
-
-            f.write(chunk)
+                file.write(chunk)
 
     return path
 
+
+# =====================================
+# INSTAGRAM
+# =====================================
 
 def download_instagram(url, folder):
 
@@ -272,7 +343,9 @@ def download_instagram(url, folder):
     )
 
     if not match:
-        raise ValueError("Пайванди Instagram нодуруст аст.")
+        raise ValueError(
+            "Пайванди Instagram нодуруст аст."
+        )
 
     shortcode = match.group(1)
 
@@ -292,25 +365,30 @@ def download_instagram(url, folder):
 
     results = []
 
-    # Карусел
+    # CAROUSEL
+
     if post.typename == "GraphSidecar":
 
-        nodes = post.get_sidecar_nodes()
-
-        for index, node in enumerate(nodes, start=1):
+        for index, node in enumerate(
+            post.get_sidecar_nodes(),
+            start=1
+        ):
 
             if node.is_video:
+
                 media_url = node.video_url
                 ext = ".mp4"
                 media_type = "video"
+
             else:
+
                 media_url = node.display_url
                 ext = ".jpg"
                 media_type = "photo"
 
             filename = os.path.join(
                 folder,
-                f"media_{index}{ext}"
+                f"instagram_{index}{ext}"
             )
 
             download_file(media_url, filename)
@@ -319,39 +397,29 @@ def download_instagram(url, folder):
 
         return results
 
-    # Як сурат
+    # PHOTO
+
     if not post.is_video:
 
-        filename = os.path.join(folder, "photo.jpg")
+        filename = os.path.join(
+            folder,
+            "instagram_photo.jpg"
+        )
 
         download_file(post.url, filename)
 
-        results.append((filename, "photo"))
+        return [(filename, "photo")]
 
-        return results
+    # REELS / VIDEO
 
-    # Reels ё видео
-    options = {
-        "format": "best[ext=mp4]/best",
-        "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "max_filesize": MAX_SIZE,
-        "merge_output_format": "mp4",
-    }
+    filename = os.path.join(
+        folder,
+        "instagram_video.mp4"
+    )
 
-    with yt_dlp.YoutubeDL(options) as ydl:
-        ydl.download([url])
+    download_file(post.video_url, filename)
 
-    for filename in os.listdir(folder):
-
-        path = os.path.join(folder, filename)
-
-        if os.path.isfile(path):
-            results.append((path, "video"))
-
-    return results
+    return [(filename, "video")]
 
 
 # =====================================
@@ -370,25 +438,31 @@ def download_facebook_photo(url, folder):
 
     html = response.text
 
-    match = re.search(
+    patterns = [
         r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
-        html,
-        re.I
-    )
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image'
+    ]
 
-    if not match:
-        match = re.search(
-            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image',
-            html,
-            re.I
+    image_url = None
+
+    for pattern in patterns:
+
+        match = re.search(pattern, html, re.I)
+
+        if match:
+            image_url = unquote(match.group(1))
+            break
+
+    if not image_url:
+
+        raise ValueError(
+            "Сурати Facebook ёфт нашуд."
         )
 
-    if not match:
-        raise ValueError("Сурати дастрас ёфт нашуд.")
-
-    image_url = match.group(1)
-
-    filename = os.path.join(folder, "facebook_photo.jpg")
+    filename = os.path.join(
+        folder,
+        "facebook_photo.jpg"
+    )
 
     download_file(image_url, filename)
 
@@ -396,9 +470,8 @@ def download_facebook_photo(url, folder):
 
 
 # =====================================
-# TIKTOK / FACEBOOK / YOUTUBE
+# YOUTUBE / TIKTOK / FACEBOOK
 # =====================================
-
 
 def download_other(url, folder, quality):
 
@@ -425,12 +498,16 @@ def download_other(url, folder, quality):
         "retries": 3,
         "fragment_retries": 3,
         "overwrites": True,
+        "max_filesize": MAX_SIZE,
     }
+
+    # MP3
 
     if quality == "mp3":
 
         options.update({
             "format": "bestaudio/best",
+
             "postprocessors": [{
                 "key": "FFmpegExtractAudio",
                 "preferredcodec": "mp3",
@@ -438,17 +515,23 @@ def download_other(url, folder, quality):
             }]
         })
 
+    # VIDEO
+
     else:
 
         options.update({
             "format": (
+                f"bestvideo[height<={height}][ext=mp4]"
+                "+bestaudio[ext=m4a]/"
                 f"best[height<={height}][ext=mp4]/"
                 f"best[height<={height}]/best"
             ),
+
             "merge_output_format": "mp4",
         })
 
     with yt_dlp.YoutubeDL(options) as ydl:
+
         ydl.download([url])
 
     results = []
@@ -462,19 +545,36 @@ def download_other(url, folder, quality):
 
         ext = os.path.splitext(filename)[1].lower()
 
-        if ext in (".jpg", ".jpeg", ".png", ".webp"):
+        if ext in (
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".webp"
+        ):
+
             media_type = "photo"
 
         elif ext == ".mp3":
+
             media_type = "audio"
 
-        elif ext in (".mp4", ".mkv", ".webm", ".mov"):
+        elif ext in (
+            ".mp4",
+            ".mkv",
+            ".webm",
+            ".mov",
+            ".m4v"
+        ):
+
             media_type = "video"
 
         else:
             continue
 
-        if os.path.getsize(path) > MAX_SIZE:
+        size = os.path.getsize(path)
+
+        if size > MAX_SIZE:
+
             raise ValueError(
                 "Файл аз маҳдудияти 49 MB калон аст."
             )
@@ -482,33 +582,126 @@ def download_other(url, folder, quality):
         results.append((path, media_type))
 
     if not results:
-        raise ValueError("Файли мувофиқ ёфт нашуд.")
+
+        raise ValueError(
+            "Файл барои фиристодан ёфт нашуд."
+        )
 
     return results
 
 
-        
+# =====================================
+# URL VALIDATION
+# =====================================
+
+def validate_url(url):
+
+    try:
+
+        parsed = urlparse(url)
+
+        host = (parsed.hostname or "").lower()
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        if not any(
+            host == domain or host.endswith("." + domain)
+            for domain in ALLOWED_DOMAINS
+        ):
+            return False
+
+        return True
+
+    except Exception:
+
+        return False
+
+
+# =====================================
+# SEND FILES
+# =====================================
+
+async def send_files(update, files):
+
+    sent = 0
+
+    for filename, media_type in files:
+
+        if not os.path.isfile(filename):
+            continue
+
+        size = os.path.getsize(filename)
+
+        if size > MAX_SIZE:
+            continue
+
+        if media_type == "photo" and size <= 10 * 1024 * 1024:
+
+            await update.message.reply_photo(
+                photo=open(filename, "rb")
+            )
+
+        elif media_type == "video":
+
+            try:
+
+                with open(filename, "rb") as media:
+
+                    await update.message.reply_video(
+                        video=media,
+                        supports_streaming=True
+                    )
+
+            except Exception:
+
+                with open(filename, "rb") as media:
+
+                    await update.message.reply_document(
+                        document=media
+                    )
+
+        elif media_type == "audio":
+
+            with open(filename, "rb") as media:
+
+                await update.message.reply_audio(
+                    audio=media
+                )
+
+        else:
+
+            with open(filename, "rb") as media:
+
+                await update.message.reply_document(
+                    document=media
+                )
+
+        sent += 1
+
+    return sent
 
 
 # =====================================
 # LINK HANDLER
 # =====================================
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_link(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message or not update.message.text:
         return
 
-    url = update.message.text.strip()
+    text = update.message.text.strip()
 
-    parsed = urlparse(url)
+    match = re.search(
+        r"https?://\S+",
+        text
+    )
 
-    host = (parsed.hostname or "").lower()
-
-    if not parsed.scheme in ("http", "https") or not any(
-        host == domain or host.endswith("." + domain)
-        for domain in ALLOWED_DOMAINS
-    ):
+    if not match:
 
         await update.message.reply_text(
             get_text(context, "invalid")
@@ -516,62 +709,75 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         return
 
+    url = match.group(0).rstrip(".,!?)]}")
+
+    if not validate_url(url):
+
+        await update.message.reply_text(
+            get_text(context, "invalid")
+        )
+
+        return
+
+    parsed = urlparse(url)
+
+    host = (parsed.hostname or "").lower()
+
     is_instagram = (
-        host == "instagram.com" or host.endswith(".instagram.com")
+        host == "instagram.com"
+        or host.endswith(".instagram.com")
     )
 
     is_facebook = (
-        host == "facebook.com" or
-        host.endswith(".facebook.com") or
-        host == "fb.watch"
+        host == "facebook.com"
+        or host.endswith(".facebook.com")
+        or host == "fb.watch"
     )
 
-    quality = context.user_data.get("quality", "best")
+    quality = context.user_data.get(
+        "quality",
+        "best"
+    )
 
     msg = await update.message.reply_text(
         get_text(context, "checking")
     )
 
-    folder = tempfile.mkdtemp(prefix="turbosave_")
+    folder = tempfile.mkdtemp(
+        prefix="turbosave_"
+    )
 
     try:
 
-        loop = asyncio.get_running_loop()
+        # DOWNLOAD
 
         if is_instagram:
 
-            # Instagram: сифати пешина нигоҳ дошта мешавад
-            files = await loop.run_in_executor(
-                None,
+            files = await asyncio.to_thread(
                 download_instagram,
+                url,
+                folder
+            )
+
+        elif is_facebook and (
+            "/photo" in parsed.path
+            or "/photos" in parsed.path
+        ):
+
+            files = await asyncio.to_thread(
+                download_facebook_photo,
                 url,
                 folder
             )
 
         else:
 
-            # Facebook photo post
-            if is_facebook and (
-                "/photo" in parsed.path or
-                "/photos" in parsed.path
-            ):
-
-                files = await loop.run_in_executor(
-                    None,
-                    download_facebook_photo,
-                    url,
-                    folder
-                )
-
-            else:
-
-                files = await loop.run_in_executor(
-                    None,
-                    download_other,
-                    url,
-                    folder,
-                    quality
-                )
+            files = await asyncio.to_thread(
+                download_other,
+                url,
+                folder,
+                quality
+            )
 
         if not files:
 
@@ -585,86 +791,99 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             get_text(context, "sending")
         )
 
-        sent = 0
-
-        for filename, media_type in files:
-
-            if not os.path.isfile(filename):
-                continue
-
-            size = os.path.getsize(filename)
-
-            if size > MAX_SIZE:
-                continue
-
-            with open(filename, "rb") as media:
-
-                if media_type == "photo" and size <= 10 * 1024 * 1024:
-
-                    await update.message.reply_photo(
-                        photo=media
-                    )
-
-                elif media_type == "video":
-
-                    await update.message.reply_video(
-                        video=media,
-                        supports_streaming=True
-                    )
-
-                elif media_type == "audio":
-
-                    await update.message.reply_audio(
-                        audio=media
-                    )
-
-                else:
-
-                    await update.message.reply_document(
-                        document=media
-                    )
-
-            sent += 1
+        sent = await send_files(
+            update,
+            files
+        )
 
         if sent == 0:
+
             await msg.edit_text(
                 get_text(context, "failed")
             )
+
         else:
+
             await msg.edit_text(
-                get_text(context, "done") +
-                f"\n\n📦 Файлҳо: {sent}"
+                get_text(context, "done")
+                + f"\n\n📦 Файлҳо: {sent}"
             )
 
     except Exception as error:
 
-        logger.exception("Download failed")
-
-        await msg.edit_text(
-            get_text(context, "failed") +
-            "\n\n" + str(error)[:500]
+        logger.exception(
+            "Download failed"
         )
+
+        error_text = str(error)
+
+        if (
+            "max-filesize" in error_text.lower()
+            or "file is larger" in error_text.lower()
+            or "too large" in error_text.lower()
+        ):
+
+            message = get_text(context, "large")
+
+        else:
+
+            message = (
+                get_text(context, "failed")
+                + "\n\n"
+                + error_text[:350]
+            )
+
+        await msg.edit_text(message)
 
     finally:
 
-        shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(
+            folder,
+            ignore_errors=True
+        )
+
+
+# =====================================
+# ERROR HANDLER
+# =====================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    logger.error(
+        "Telegram error: %s",
+        context.error,
+        exc_info=context.error
+    )
 
 
 # =====================================
 # MAIN
 # =====================================
 
-async def main():
+def main():
 
     if not TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN дар GitHub Secrets нест!"
         )
 
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("settings", settings))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CommandHandler("settings", settings)
+    )
 
     app.add_handler(
         CallbackQueryHandler(buttons)
@@ -677,14 +896,15 @@ async def main():
         )
     )
 
-    logger.info("TurboSave started")
+    app.add_error_handler(error_handler)
 
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+    logger.info("TurboSave started successfully!")
 
-    await asyncio.Event().wait()
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+
+    main()
