@@ -1,9 +1,9 @@
 
-name: YouTube Turbo Bot
-
-on:
-  workflow_dispatch:
-
+- name: Install FFmpeg
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y ffmpeg
+    
   schedule:
     - cron: "0 */5 * * *"
 
