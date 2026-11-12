@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   run-bot:
+    name: Start YouTube Bot
     runs-on: ubuntu-latest
     timeout-minutes: 290
 
@@ -34,18 +35,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          ffmpeg -version
+
+      - name: Upgrade pip
+        run: |
+          python -m pip install --upgrade pip
 
       - name: Install requirements
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
+
+      - name: Update yt-dlp
+        run: |
+          python -m pip install --upgrade yt-dlp
+          python -m yt_dlp --version
 
       - name: Check dependencies
         run: |
           python -c "import telegram, yt_dlp"
           ffmpeg -version
 
-      - name: Start YouTube Bot
+      - name: Start YouTube Turbo Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
