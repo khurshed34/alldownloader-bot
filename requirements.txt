@@ -1,5 +1,5 @@
 
-python-telegram-bot>=21.0,<23.0
-yt-dlp
+python-telegram-bot==22.5
+yt-dlp==2026.10.26
 instaloader
 requests
