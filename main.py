@@ -399,17 +399,32 @@ def download_facebook_photo(url, folder):
 # TIKTOK / FACEBOOK / YOUTUBE
 # =====================================
 
+
 def download_other(url, folder, quality):
 
-    output = os.path.join(folder, "%(title).80s_%(id)s.%(ext)s")
+    height = {
+        "best": 1080,
+        "1080": 1080,
+        "720": 720,
+        "480": 480,
+        "360": 360
+    }.get(quality, 1080)
+
+    output = os.path.join(
+        folder,
+        "%(title).60s_%(id)s.%(ext)s"
+    )
 
     options = {
         "outtmpl": output,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "max_filesize": MAX_SIZE,
         "restrictfilenames": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "overwrites": True,
     }
 
     if quality == "mp3":
@@ -424,14 +439,6 @@ def download_other(url, folder, quality):
         })
 
     else:
-
-        height = {
-            "best": 9999,
-            "1080": 1080,
-            "720": 720,
-            "480": 480,
-            "360": 360
-        }.get(quality, 9999)
 
         options.update({
             "format": (
@@ -457,14 +464,30 @@ def download_other(url, folder, quality):
 
         if ext in (".jpg", ".jpeg", ".png", ".webp"):
             media_type = "photo"
+
         elif ext == ".mp3":
             media_type = "audio"
-        else:
+
+        elif ext in (".mp4", ".mkv", ".webm", ".mov"):
             media_type = "video"
+
+        else:
+            continue
+
+        if os.path.getsize(path) > MAX_SIZE:
+            raise ValueError(
+                "Файл аз маҳдудияти 49 MB калон аст."
+            )
 
         results.append((path, media_type))
 
+    if not results:
+        raise ValueError("Файли мувофиқ ёфт нашуд.")
+
     return results
+
+
+        
 
 
 # =====================================
