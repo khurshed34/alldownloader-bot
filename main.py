@@ -10,8 +10,10 @@ import sqlite3
 import requests
 import yt_dlp
 import instaloader
+import base64
 
-from datetime import datetime, date
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urljoin
 
@@ -24,6 +26,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import RetryAfter, Forbidden, TelegramError
+
 
 # =====================================
 # SETTINGS
@@ -31,8 +35,16 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6777943949
+
 MAX_SIZE = 49 * 1024 * 1024
 DB_NAME = "bot_stats.db"
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPOSITORY")
+GITHUB_BRANCH = os.getenv("GITHUB_REF_NAME", "main")
+GITHUB_DB_PATH = "bot_stats.db"
+
+TZ = ZoneInfo("Asia/Dushanbe")
 
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN ёфт нашуд.")
@@ -44,12 +56,107 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+def now():
+    return datetime.now(TZ)
+
+
+# =====================================
+# GITHUB DATABASE BACKUP
+# =====================================
+
+def github_headers():
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+
+def github_db_url():
+    return (
+        f"https://api.github.com/repos/"
+        f"{GITHUB_REPO}/contents/{GITHUB_DB_PATH}"
+    )
+
+
+def restore_database():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        logger.warning(
+            "GitHub backup фаъол нест. База метавонад гум шавад."
+        )
+        return
+
+    response = requests.get(
+        github_db_url(),
+        headers=github_headers(),
+        params={"ref": GITHUB_BRANCH},
+        timeout=30
+    )
+
+    if response.status_code == 404:
+        logger.info("Базаи нав сохта мешавад.")
+        return
+
+    response.raise_for_status()
+
+    data = response.json()
+    content = base64.b64decode(data["content"])
+
+    with open(DB_NAME, "wb") as file:
+        file.write(content)
+
+    logger.info("База аз GitHub барқарор шуд.")
+
+
+def backup_database():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return
+
+    with open(DB_NAME, "rb") as file:
+        content = base64.b64encode(file.read()).decode("utf-8")
+
+    url = github_db_url()
+
+    response = requests.get(
+        url,
+        headers=github_headers(),
+        params={"ref": GITHUB_BRANCH},
+        timeout=30
+    )
+
+    payload = {
+        "message": "Update TurboSave statistics",
+        "content": content,
+        "branch": GITHUB_BRANCH
+    }
+
+    if response.status_code == 200:
+        payload["sha"] = response.json()["sha"]
+    elif response.status_code != 404:
+        response.raise_for_status()
+
+    result = requests.put(
+        url,
+        headers=github_headers(),
+        json=payload,
+        timeout=60
+    )
+
+    result.raise_for_status()
+
+    logger.info("База дар GitHub нигоҳ дошта шуд.")
+
+
 # =====================================
 # DATABASE
 # =====================================
 
 def init_db():
+    restore_database()
+
     with sqlite3.connect(DB_NAME) as db:
+
         db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -63,9 +170,23 @@ def init_db():
             CREATE TABLE IF NOT EXISTS downloads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
-                created_at TEXT
+                created_at TEXT,
+                status TEXT DEFAULT 'success'
             )
         """)
+
+        columns = [
+            row[1] for row in
+            db.execute("PRAGMA table_info(downloads)").fetchall()
+        ]
+
+        if "status" not in columns:
+            db.execute("""
+                ALTER TABLE downloads
+                ADD COLUMN status TEXT DEFAULT 'success'
+            """)
+
+    backup_database()
 
 
 def save_user(user):
@@ -73,6 +194,12 @@ def save_user(user):
         return
 
     with sqlite3.connect(DB_NAME) as db:
+
+        existing = db.execute(
+            "SELECT user_id FROM users WHERE user_id=?",
+            (user.id,)
+        ).fetchone()
+
         db.execute("""
             INSERT INTO users
             (user_id, username, first_name, joined_at)
@@ -84,22 +211,35 @@ def save_user(user):
             user.id,
             user.username or "",
             user.first_name or "",
-            datetime.now().isoformat()
+            now().isoformat()
         ))
 
+    if not existing:
+        backup_database()
 
-def save_download(user_id):
+
+def save_download(user_id, success):
+    status = "success" if success else "failed"
+
     with sqlite3.connect(DB_NAME) as db:
         db.execute("""
-            INSERT INTO downloads (user_id, created_at)
-            VALUES (?, ?)
-        """, (user_id, datetime.now().isoformat()))
+            INSERT INTO downloads
+            (user_id, created_at, status)
+            VALUES (?, ?, ?)
+        """, (
+            user_id,
+            now().isoformat(),
+            status
+        ))
+
+    backup_database()
 
 
 def get_statistics():
-    today = date.today().isoformat()
+    today = now().date().isoformat()
 
     with sqlite3.connect(DB_NAME) as db:
+
         users = db.execute(
             "SELECT COUNT(*) FROM users"
         ).fetchone()[0]
@@ -109,16 +249,26 @@ def get_statistics():
             (today + "%",)
         ).fetchone()[0]
 
-        downloads = db.execute(
+        total = db.execute(
             "SELECT COUNT(*) FROM downloads"
         ).fetchone()[0]
 
-        today_downloads = db.execute(
-            "SELECT COUNT(*) FROM downloads WHERE created_at LIKE ?",
-            (today + "%",)
-        ).fetchone()[0]
+        success = db.execute("""
+            SELECT COUNT(*) FROM downloads
+            WHERE status='success'
+        """).fetchone()[0]
 
-    return users, today_users, downloads, today_downloads
+        failed = db.execute("""
+            SELECT COUNT(*) FROM downloads
+            WHERE status='failed'
+        """).fetchone()[0]
+
+        today_downloads = db.execute("""
+            SELECT COUNT(*) FROM downloads
+            WHERE created_at LIKE ?
+        """, (today + "%",)).fetchone()[0]
+
+    return users, today_users, total, success, failed, today_downloads
 
 
 def get_users():
@@ -141,7 +291,7 @@ def is_admin(user_id):
 
 TEXTS = {
     "tj": {
-        "welcome": "👋 Ба TurboSave Bot хуш омадед!\n\nЗабонро интихоб кунед:",
+        "welcome": "👋 Ба TurboSave Bot хуш омадед!",
         "send_link": "🔗 Акнун пайванди видео ё аксро фиристед.",
         "quality": "🎬 Сифати видеоро интихоб кунед:",
         "downloading": "⏳ Боргирӣ оғоз шуд...",
@@ -155,7 +305,7 @@ TEXTS = {
         "original": "⭐ Сифати беҳтарин",
     },
     "ru": {
-        "welcome": "👋 Добро пожаловать в TurboSave Bot!\n\nВыберите язык:",
+        "welcome": "👋 Добро пожаловать в TurboSave Bot!",
         "send_link": "🔗 Теперь отправьте ссылку на видео или фото.",
         "quality": "🎬 Выберите качество видео:",
         "downloading": "⏳ Начинается загрузка...",
@@ -169,7 +319,7 @@ TEXTS = {
         "original": "⭐ Лучшее качество",
     },
     "en": {
-        "welcome": "👋 Welcome to TurboSave Bot!\n\nChoose your language:",
+        "welcome": "👋 Welcome to TurboSave Bot!",
         "send_link": "🔗 Now send a video or photo link.",
         "quality": "🎬 Choose video quality:",
         "downloading": "⏳ Downloading started...",
@@ -184,21 +334,22 @@ TEXTS = {
     },
 }
 
+
 # =====================================
-# COMMON HEADERS
+# HEADERS
 # =====================================
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
+        "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+
 # =====================================
-# DOWNLOAD DIRECT FILE
+# DIRECT DOWNLOAD
 # =====================================
 
 def download_file(url, filename):
@@ -220,10 +371,6 @@ def download_file(url, filename):
         raise ValueError("Файл холӣ аст.")
 
 
-# =====================================
-# FIND DOWNLOADED FILE
-# =====================================
-
 def find_downloaded_file(folder, prefix):
     files = glob.glob(os.path.join(folder, prefix + "*"))
 
@@ -240,7 +387,7 @@ def find_downloaded_file(folder, prefix):
 
 
 # =====================================
-# YT-DLP DOWNLOADER
+# YT-DLP
 # =====================================
 
 def download_with_ytdlp(url, folder, prefix, quality="best"):
@@ -281,7 +428,7 @@ def download_with_ytdlp(url, folder, prefix, quality="best"):
 
 
 # =====================================
-# INSTAGRAM DOWNLOADER
+# INSTAGRAM
 # =====================================
 
 def download_instagram(url, folder):
@@ -290,7 +437,7 @@ def download_instagram(url, folder):
     match = re.search(
         r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
         url,
-        re.IGNORECASE
+        re.I
     )
 
     if not match:
@@ -316,8 +463,7 @@ def download_instagram(url, folder):
 
     if post.typename == "GraphSidecar":
         for index, node in enumerate(
-            post.get_sidecar_nodes(),
-            start=1
+            post.get_sidecar_nodes(), 1
         ):
             if node.is_video:
                 media_url = node.video_url
@@ -339,51 +485,40 @@ def download_instagram(url, folder):
         return results
 
     if not post.is_video:
-        filename = os.path.join(
-            folder,
-            "instagram_photo.jpg"
-        )
-
+        filename = os.path.join(folder, "instagram_photo.jpg")
         download_file(post.url, filename)
         return [(filename, "photo")]
 
-    filename = os.path.join(
-        folder,
-        "instagram_video.mp4"
-    )
-
+    filename = os.path.join(folder, "instagram_video.mp4")
     download_file(post.video_url, filename)
+
     return [(filename, "video")]
 
 
 # =====================================
-# YOUTUBE DOWNLOADER
+# YOUTUBE
 # =====================================
 
 def download_youtube(url, folder, quality):
     if not re.search(r"(youtube\.com|youtu\.be)", url, re.I):
         raise ValueError("Пайванди YouTube нодуруст аст.")
 
-    return download_with_ytdlp(
-        url, folder, "youtube", quality
-    )
+    return download_with_ytdlp(url, folder, "youtube", quality)
 
 
 # =====================================
-# TIKTOK DOWNLOADER
+# TIKTOK
 # =====================================
 
 def download_tiktok(url, folder, quality):
     if not re.search(r"tiktok\.com", url, re.I):
         raise ValueError("Пайванди TikTok нодуруст аст.")
 
-    return download_with_ytdlp(
-        url, folder, "tiktok", quality
-    )
+    return download_with_ytdlp(url, folder, "tiktok", quality)
 
 
 # =====================================
-# FACEBOOK HTML PARSER
+# FACEBOOK
 # =====================================
 
 class FacebookParser(HTMLParser):
@@ -397,17 +532,12 @@ class FacebookParser(HTMLParser):
             return
 
         data = dict(attrs)
-
         key = data.get("property") or data.get("name")
         value = data.get("content")
 
         if key and value:
             self.meta[key.lower()] = value
 
-
-# =====================================
-# FACEBOOK PHOTO DOWNLOADER
-# =====================================
 
 def download_facebook_photo(url, folder):
     session = requests.Session()
@@ -471,10 +601,6 @@ def download_facebook_photo(url, folder):
     return [(filename, "photo")]
 
 
-# =====================================
-# FACEBOOK DOWNLOADER
-# =====================================
-
 def download_facebook(url, folder, quality):
     if not re.search(
         r"(facebook\.com|fb\.watch|fb\.com)",
@@ -489,10 +615,7 @@ def download_facebook(url, folder, quality):
         )
 
     except Exception as video_error:
-        logger.warning(
-            "Facebook video failed: %s",
-            video_error
-        )
+        logger.warning("Facebook video failed: %s", video_error)
 
         try:
             return download_facebook_photo(url, folder)
@@ -506,7 +629,7 @@ def download_facebook(url, folder, quality):
 
 
 # =====================================
-# AUTOMATIC PLATFORM DETECTION
+# PLATFORM DETECTION
 # =====================================
 
 def download_media(url, folder, quality):
@@ -516,24 +639,22 @@ def download_media(url, folder, quality):
     if "instagram.com" in domain:
         return download_instagram(url, folder)
 
-    elif "youtube.com" in domain or "youtu.be" in domain:
+    if "youtube.com" in domain or "youtu.be" in domain:
         return download_youtube(url, folder, quality)
 
-    elif "tiktok.com" in domain:
+    if "tiktok.com" in domain:
         return download_tiktok(url, folder, quality)
 
-    elif (
-        "facebook.com" in domain
-        or "fb.watch" in domain
-        or "fb.com" in domain
-    ):
+    if any(x in domain for x in [
+        "facebook.com", "fb.watch", "fb.com"
+    ]):
         return download_facebook(url, folder, quality)
 
     raise ValueError("Ин платформа дастгирӣ намешавад.")
 
 
 # =====================================
-# START / LANGUAGE SELECTION
+# START
 # =====================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -556,7 +677,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================================
-# LANGUAGE CALLBACK
+# LANGUAGE
 # =====================================
 
 async def language_callback(update, context):
@@ -578,72 +699,77 @@ async def language_callback(update, context):
 
 
 # =====================================
-# ADMIN PANEL
+# ADMIN KEYBOARD
 # =====================================
 
 def admin_keyboard():
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📊 Омори бот",
-                callback_data="admin_stats"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "👥 Истифодабарандагон",
-                callback_data="admin_users"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📢 Ирсоли пост",
-                callback_data="admin_broadcast"
-            )
-        ],
+        [InlineKeyboardButton(
+            "📊 Омори бот",
+            callback_data="admin_stats"
+        )],
+        [InlineKeyboardButton(
+            "👥 Истифодабарандагон",
+            callback_data="admin_users"
+        )],
+        [InlineKeyboardButton(
+            "📢 Ирсоли пост",
+            callback_data="admin_broadcast"
+        )],
     ])
 
 
 async def admin_panel(update, context):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text(
-            "⛔ Дастрасӣ манъ аст."
-        )
+        await update.message.reply_text("⛔ Дастрасӣ манъ аст.")
         return
 
     await update.message.reply_text(
-        "👑 ПАНЕЛИ АДМИН\n\n"
-        "Ба қисмати лозима интихоб кун:",
+        "👑 ПАНЕЛИ АДМИН\n\nҚисматро интихоб кун:",
         reply_markup=admin_keyboard()
     )
 
+
+# =====================================
+# ADMIN CALLBACK
+# =====================================
 
 async def admin_callback(update, context):
     query = update.callback_query
     await query.answer()
 
     if not is_admin(query.from_user.id):
-        await query.edit_message_text(
-            "⛔ Дастрасӣ манъ аст."
-        )
+        await query.edit_message_text("⛔ Дастрасӣ манъ аст.")
         return
 
     if query.data == "admin_stats":
-        users, today_users, downloads, today_downloads = (
-            get_statistics()
-        )
+
+        (
+            users,
+            today_users,
+            total,
+            success,
+            failed,
+            today_downloads
+        ) = get_statistics()
 
         text = (
-            "📊 ОМОРИ БОТ\n\n"
-            f"👥 Ҳамаи истифодабарандагон: {users}\n"
-            f"🆕 Истифодабарандагони имрӯз: {today_users}\n\n"
-            f"📥 Ҳамаи зеркашиҳо: {downloads}\n"
-            f"📅 Зеркашиҳои имрӯз: {today_downloads}"
+            "📊 ОМОРИ TURBOSAVE BOT\n\n"
+            f"👥 Ҳамаи корбарон: {users}\n"
+            f"🆕 Корбарони имрӯз: {today_users}\n\n"
+            f"📥 Ҳамаи дархостҳо: {total}\n"
+            f"✅ Муваффақ: {success}\n"
+            f"❌ Номуваффақ: {failed}\n"
+            f"📅 Дархостҳои имрӯз: {today_downloads}"
         )
 
         await query.edit_message_text(
             text,
             reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🔄 Навсозӣ",
+                    callback_data="admin_stats"
+                ),
                 InlineKeyboardButton(
                     "🔙 Бозгашт",
                     callback_data="admin_home"
@@ -652,21 +778,21 @@ async def admin_callback(update, context):
         )
 
     elif query.data == "admin_users":
-        users = get_users()
 
+        users = get_users()
         text = "👥 ОХИРИН ИСТИФОДАБАРАНДАГОН\n\n"
 
         if not users:
             text += "Ҳоло истифодабаранда нест."
-        else:
-            for index, user in enumerate(users, 1):
-                user_id, username, first_name = user
 
-                text += (
-                    f"{index}. {first_name or 'Беном'}\n"
-                    f"🆔 {user_id}\n"
-                    f"👤 @{username or 'username нест'}\n\n"
-                )
+        for index, user in enumerate(users, 1):
+            user_id, username, first_name = user
+
+            text += (
+                f"{index}. {first_name or 'Беном'}\n"
+                f"🆔 {user_id}\n"
+                f"👤 @{username or 'username нест'}\n\n"
+            )
 
         await query.edit_message_text(
             text[:4000],
@@ -679,15 +805,19 @@ async def admin_callback(update, context):
         )
 
     elif query.data == "admin_broadcast":
+
         context.user_data["awaiting_broadcast"] = True
 
         await query.edit_message_text(
             "📢 ПОСТИ ХУДРО ФИРИСТЕД!\n\n"
-            "Матн, сурат, видео ё дигар файл фиристед.\n\n"
+            "Матн, сурат, видео ё файл фиристед.\n\n"
             "❌ Барои бекор кардан /cancel нависед."
         )
 
     elif query.data == "admin_home":
+
+        context.user_data["awaiting_broadcast"] = False
+
         await query.edit_message_text(
             "👑 ПАНЕЛИ АДМИН",
             reply_markup=admin_keyboard()
@@ -695,14 +825,16 @@ async def admin_callback(update, context):
 
 
 # =====================================
-# BROADCAST / SEND POST
+# BROADCAST
 # =====================================
 
 async def broadcast_post(update, context):
     if not is_admin(update.effective_user.id):
         return
 
-    if not update.message:
+    message = update.message
+
+    if not message:
         return
 
     context.user_data["awaiting_broadcast"] = False
@@ -714,23 +846,55 @@ async def broadcast_post(update, context):
 
     success = 0
     failed = 0
+    blocked = 0
 
-    await update.message.reply_text(
-        f"⏳ Ирсоли пост ба {len(users)} истифодабаранда оғоз шуд..."
+    status_message = await message.reply_text(
+        f"⏳ Ирсол ба {len(users)} корбар оғоз шуд..."
     )
 
-    for row in users:
+    for index, row in enumerate(users, 1):
         user_id = row[0]
 
         try:
             await context.bot.copy_message(
                 chat_id=user_id,
-                from_chat_id=update.effective_chat.id,
-                message_id=update.message.message_id
+                from_chat_id=message.chat_id,
+                message_id=message.message_id
             )
             success += 1
 
-        except Exception as error:
+        except RetryAfter as error:
+            wait_time = error.retry_after
+            if hasattr(wait_time, "total_seconds"):
+                wait_time = wait_time.total_seconds()
+
+            await asyncio.sleep(float(wait_time) + 1)
+
+            try:
+                await context.bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=message.chat_id,
+                    message_id=message.message_id
+                )
+                success += 1
+
+            except Forbidden:
+                failed += 1
+                blocked += 1
+
+            except Exception as retry_error:
+                failed += 1
+                logger.warning(
+                    "Broadcast retry failed for %s: %s",
+                    user_id,
+                    retry_error
+                )
+
+        except Forbidden:
+            failed += 1
+            blocked += 1
+
+        except TelegramError as error:
             failed += 1
             logger.warning(
                 "Broadcast failed for %s: %s",
@@ -738,12 +902,29 @@ async def broadcast_post(update, context):
                 error
             )
 
+        except Exception:
+            failed += 1
+            logger.exception("Broadcast error for %s", user_id)
+
+        if index % 20 == 0:
+            try:
+                await status_message.edit_text(
+                    f"📢 Ирсол идома дорад...\n\n"
+                    f"👥 Ҳамагӣ: {len(users)}\n"
+                    f"✅ Ирсол шуд: {success}\n"
+                    f"❌ Нарафт: {failed}"
+                )
+            except Exception:
+                pass
+
         await asyncio.sleep(0.05)
 
-    await update.message.reply_text(
+    await status_message.edit_text(
         "✅ ИРСОЛИ ПОСТ АНҶОМ ЁФТ!\n\n"
-        f"📨 Ирсол шуд: {success}\n"
-        f"❌ Нарафт: {failed}"
+        f"👥 Ҳамагӣ: {len(users)}\n"
+        f"✅ Ирсол шуд: {success}\n"
+        f"❌ Нарафт: {failed}\n"
+        f"🚫 Ботро бастаанд: {blocked}"
     )
 
 
@@ -759,7 +940,7 @@ async def cancel_broadcast(update, context):
 
 
 # =====================================
-# HANDLE USER LINKS AND ADMIN POSTS
+# HANDLE MESSAGES
 # =====================================
 
 async def handle_message(update, context):
@@ -769,7 +950,6 @@ async def handle_message(update, context):
     user = update.effective_user
     save_user(user)
 
-    # ADMIN BROADCAST
     if (
         is_admin(user.id)
         and context.user_data.get("awaiting_broadcast")
@@ -791,7 +971,7 @@ async def handle_message(update, context):
     match = re.search(
         r"https?://[^\s<>]+",
         text,
-        re.IGNORECASE
+        re.I
     )
 
     if not match:
@@ -801,7 +981,6 @@ async def handle_message(update, context):
         return
 
     url = match.group(0).rstrip(".,!?;:)]}")
-
     domain = urlparse(url).netloc.lower()
 
     supported = any(
@@ -826,31 +1005,17 @@ async def handle_message(update, context):
     context.user_data["url"] = url
 
     keyboard = [
+        [InlineKeyboardButton(
+            "⭐ Best",
+            callback_data="quality_best"
+        )],
         [
-            InlineKeyboardButton(
-                "⭐ Best",
-                callback_data="quality_best"
-            ),
+            InlineKeyboardButton("1080p", callback_data="quality_1080"),
+            InlineKeyboardButton("720p", callback_data="quality_720"),
         ],
         [
-            InlineKeyboardButton(
-                "1080p",
-                callback_data="quality_1080"
-            ),
-            InlineKeyboardButton(
-                "720p",
-                callback_data="quality_720"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "480p",
-                callback_data="quality_480"
-            ),
-            InlineKeyboardButton(
-                "360p",
-                callback_data="quality_360"
-            ),
+            InlineKeyboardButton("480p", callback_data="quality_480"),
+            InlineKeyboardButton("360p", callback_data="quality_360"),
         ],
     ]
 
@@ -872,6 +1037,7 @@ async def send_media_file(message, filename, media_type, lang):
         return False
 
     with open(filename, "rb") as file:
+
         if media_type == "video":
             await message.reply_video(
                 video=file,
@@ -880,6 +1046,7 @@ async def send_media_file(message, filename, media_type, lang):
                 write_timeout=120,
                 connect_timeout=30
             )
+
         else:
             try:
                 await message.reply_photo(
@@ -888,7 +1055,8 @@ async def send_media_file(message, filename, media_type, lang):
                     write_timeout=120,
                     connect_timeout=30
                 )
-            except Exception:
+
+            except TelegramError:
                 file.seek(0)
 
                 await message.reply_document(
@@ -930,6 +1098,7 @@ async def quality_callback(update, context):
     )
 
     folder = tempfile.mkdtemp(prefix="turbosave_")
+    recorded = False
 
     try:
         results = await asyncio.to_thread(
@@ -949,19 +1118,29 @@ async def quality_callback(update, context):
         sent = 0
 
         for filename, media_type in results:
+
             if not os.path.exists(filename):
                 continue
 
-            success = await send_media_file(
-                query.message,
-                filename,
-                media_type,
-                lang
-            )
+            try:
+                success = await send_media_file(
+                    query.message,
+                    filename,
+                    media_type,
+                    lang
+                )
 
-            if success:
-                sent += 1
-                save_download(query.from_user.id)
+                if success:
+                    sent += 1
+
+            except Exception as error:
+                logger.warning(
+                    "File sending failed: %s",
+                    error
+                )
+
+        save_download(query.from_user.id, sent > 0)
+        recorded = True
 
         await query.message.reply_text(
             TEXTS[lang]["done"]
@@ -971,6 +1150,12 @@ async def quality_callback(update, context):
 
     except Exception as error:
         logger.exception("Download error")
+
+        if not recorded:
+            try:
+                save_download(query.from_user.id, False)
+            except Exception:
+                logger.exception("Statistics save failed")
 
         await query.message.reply_text(
             TEXTS[lang]["failed"].format(str(error)[:500])
@@ -988,12 +1173,13 @@ async def quality_callback(update, context):
 async def error_handler(update, context):
     logger.error(
         "Telegram error: %s",
-        context.error
+        context.error,
+        exc_info=context.error
     )
 
 
 # =====================================
-# MAIN BOT
+# MAIN
 # =====================================
 
 def main():
@@ -1005,12 +1191,10 @@ def main():
         .build()
     )
 
-    # START
     app.add_handler(
         CommandHandler("start", start)
     )
 
-    # ADMIN
     app.add_handler(
         CommandHandler("admin", admin_panel)
     )
@@ -1019,7 +1203,6 @@ def main():
         CommandHandler("cancel", cancel_broadcast)
     )
 
-    # CALLBACKS
     app.add_handler(
         CallbackQueryHandler(
             language_callback,
@@ -1041,7 +1224,6 @@ def main():
         )
     )
 
-    # ALL MESSAGES
     app.add_handler(
         MessageHandler(
             filters.ALL & ~filters.COMMAND,
