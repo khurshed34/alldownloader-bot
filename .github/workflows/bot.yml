@@ -1,17 +1,12 @@
-
-name: TurboSave Bot
+name: Telegram Downloader Bot
 
 on:
   workflow_dispatch:
-
   schedule:
-    - cron: "0 */6 * * *"
-
-permissions:
-  contents: read
+    - cron: "*/5 * * * *"
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
@@ -29,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run TurboSave
+      - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: python main.py
