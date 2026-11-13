@@ -10,6 +10,7 @@ import requests
 import yt_dlp
 import instaloader
 
+from html.parser import HTMLParser
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -35,7 +36,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN дар GitHub Secrets ёфт нашуд.")
+    raise RuntimeError(
+        "BOT_TOKEN дар GitHub Secrets ёфт нашуд."
+    )
 
 
 # =====================================
@@ -57,13 +60,20 @@ def download_file(url, filename):
 
     with open(filename, "wb") as file:
 
-        for chunk in response.iter_content(1024 * 1024):
+        for chunk in response.iter_content(
+            1024 * 1024
+        ):
 
             if chunk:
                 file.write(chunk)
 
-    if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-        raise ValueError("Файл холӣ ё зеркашинашуда аст.")
+    if (
+        not os.path.exists(filename)
+        or os.path.getsize(filename) == 0
+    ):
+        raise ValueError(
+            "Файл холӣ ё зеркашинашуда аст."
+        )
 
 
 # =====================================
@@ -79,13 +89,20 @@ def find_downloaded_file(folder, prefix):
     files = [
         f for f in files
         if os.path.isfile(f)
-        and not f.endswith((".part", ".ytdl", ".json"))
+        and not f.endswith(
+            (".part", ".ytdl", ".json")
+        )
     ]
 
     if not files:
-        raise ValueError("Файли зеркашидашуда ёфт нашуд.")
+        raise ValueError(
+            "Файли зеркашидашуда ёфт нашуд."
+        )
 
-    return max(files, key=os.path.getsize)
+    return max(
+        files,
+        key=os.path.getsize
+    )
 
 
 # =====================================
@@ -94,7 +111,10 @@ def find_downloaded_file(folder, prefix):
 
 def download_with_ytdlp(url, folder, prefix):
 
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(
+        folder,
+        exist_ok=True
+    )
 
     output = os.path.join(
         folder,
@@ -126,7 +146,9 @@ def download_with_ytdlp(url, folder, prefix):
         prefix
     )
 
-    return [(filename, "video")]
+    return [
+        (filename, "video")
+    ]
 
 
 # =====================================
@@ -135,7 +157,10 @@ def download_with_ytdlp(url, folder, prefix):
 
 def download_instagram(url, folder):
 
-    os.makedirs(folder, exist_ok=True)
+    os.makedirs(
+        folder,
+        exist_ok=True
+    )
 
     match = re.search(
         r"instagram\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)",
@@ -144,7 +169,9 @@ def download_instagram(url, folder):
     )
 
     if not match:
-        raise ValueError("Пайванди Instagram нодуруст аст.")
+        raise ValueError(
+            "Пайванди Instagram нодуруст аст."
+        )
 
     shortcode = match.group(1)
 
@@ -215,9 +242,11 @@ def download_instagram(url, folder):
             filename
         )
 
-        return [(filename, "photo")]
+        return [
+            (filename, "photo")
+        ]
 
-    # REELS / VIDEO
+    # VIDEO
 
     filename = os.path.join(
         folder,
@@ -229,7 +258,9 @@ def download_instagram(url, folder):
         filename
     )
 
-    return [(filename, "video")]
+    return [
+        (filename, "video")
+    ]
 
 
 # =====================================
@@ -243,7 +274,9 @@ def download_youtube(url, folder):
         url,
         re.IGNORECASE
     ):
-        raise ValueError("Пайванди YouTube нодуруст аст.")
+        raise ValueError(
+            "Пайванди YouTube нодуруст аст."
+        )
 
     return download_with_ytdlp(
         url,
@@ -263,13 +296,164 @@ def download_tiktok(url, folder):
         url,
         re.IGNORECASE
     ):
-        raise ValueError("Пайванди TikTok нодуруст аст.")
+        raise ValueError(
+            "Пайванди TikTok нодуруст аст."
+        )
 
     return download_with_ytdlp(
         url,
         folder,
         "tiktok"
     )
+
+
+# =====================================
+# FACEBOOK PHOTO PARSER
+# =====================================
+
+class FacebookMetaParser(HTMLParser):
+
+    def __init__(self):
+
+        super().__init__()
+
+        self.meta = {}
+
+    def handle_starttag(self, tag, attrs):
+
+        if tag.lower() != "meta":
+            return
+
+        data = dict(attrs)
+
+        key = (
+            data.get("property")
+            or data.get("name")
+        )
+
+        value = data.get("content")
+
+        if key and value:
+
+            self.meta[key.lower()] = value
+
+
+# =====================================
+# FACEBOOK PHOTO DOWNLOADER
+# =====================================
+
+def download_facebook_photo(url, folder):
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+    }
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=60,
+        allow_redirects=True
+    )
+
+    response.raise_for_status()
+
+    parser = FacebookMetaParser()
+
+    parser.feed(
+        response.text
+    )
+
+    image_url = (
+        parser.meta.get("og:image")
+        or parser.meta.get("og:image:secure_url")
+        or parser.meta.get("twitter:image")
+    )
+
+    if not image_url:
+
+        raise ValueError(
+            "Facebook акси дастрасро пешниҳод накард. "
+            "Шояд пост хусусӣ бошад."
+        )
+
+    if parser.meta.get(
+        "og:type",
+        ""
+    ).startswith("video"):
+
+        raise ValueError(
+            "Ин пайванд видео аст, на акси Facebook."
+        )
+
+    image_response = requests.get(
+        image_url,
+        headers={
+            "User-Agent": headers["User-Agent"],
+            "Referer": "https://www.facebook.com/"
+        },
+        stream=True,
+        timeout=90
+    )
+
+    image_response.raise_for_status()
+
+    content_type = image_response.headers.get(
+        "Content-Type",
+        ""
+    ).lower()
+
+    if not content_type.startswith("image/"):
+
+        raise ValueError(
+            "Facebook файли аксро барнагардонд."
+        )
+
+    filename = os.path.join(
+        folder,
+        "facebook_photo.jpg"
+    )
+
+    with open(filename, "wb") as file:
+
+        for chunk in image_response.iter_content(
+            1024 * 1024
+        ):
+
+            if chunk:
+                file.write(chunk)
+
+    with open(filename, "rb") as file:
+
+        signature = file.read(12)
+
+    valid_image = (
+        signature.startswith(b"\xff\xd8\xff")
+        or signature.startswith(
+            b"\x89PNG\r\n\x1a\n"
+        )
+        or signature.startswith(b"GIF87a")
+        or signature.startswith(b"GIF89a")
+        or (
+            signature.startswith(b"RIFF")
+            and signature[8:12] == b"WEBP"
+        )
+    )
+
+    if not valid_image:
+
+        os.remove(filename)
+
+        raise ValueError(
+            "Файли гирифташуда акси дуруст нест."
+        )
+
+    return [
+        (filename, "photo")
+    ]
 
 
 # =====================================
@@ -283,13 +467,43 @@ def download_facebook(url, folder):
         url,
         re.IGNORECASE
     ):
-        raise ValueError("Пайванди Facebook нодуруст аст.")
+        raise ValueError(
+            "Пайванди Facebook нодуруст аст."
+        )
 
-    return download_with_ytdlp(
-        url,
-        folder,
-        "facebook"
-    )
+    # Аввал видео
+
+    try:
+
+        return download_with_ytdlp(
+            url,
+            folder,
+            "facebook"
+        )
+
+    except Exception as video_error:
+
+        logger.info(
+            "Facebook video failed: %s",
+            video_error
+        )
+
+        # Баъд акс
+
+        try:
+
+            return download_facebook_photo(
+                url,
+                folder
+            )
+
+        except Exception as photo_error:
+
+            raise ValueError(
+                "Facebook зеркашӣ нашуд.\n"
+                f"Видео: {str(video_error)[:250]}\n"
+                f"Акс: {str(photo_error)[:250]}"
+            )
 
 
 # =====================================
@@ -307,7 +521,10 @@ def download_media(url, folder):
             folder
         )
 
-    elif "youtube.com" in url.lower() or "youtu.be" in url.lower():
+    elif (
+        "youtube.com" in url.lower()
+        or "youtu.be" in url.lower()
+    ):
 
         return download_youtube(
             url,
@@ -321,7 +538,10 @@ def download_media(url, folder):
             folder
         )
 
-    elif "facebook.com" in url.lower() or "fb.watch" in url.lower():
+    elif (
+        "facebook.com" in url.lower()
+        or "fb.watch" in url.lower()
+    ):
 
         return download_facebook(
             url,
@@ -346,7 +566,7 @@ async def start(
 
     await update.message.reply_text(
         "👋 Салом! Ба TurboSave Bot хуш омадед.\n\n"
-        "🔗 Пайванди видеоро фиристед.\n\n"
+        "🔗 Пайванди видеоро ё аксро фиристед.\n\n"
         "Платформаҳои дастгиришаванда:\n"
         "📸 Instagram\n"
         "▶️ YouTube\n"
@@ -496,7 +716,8 @@ async def handle_message(
                 )
 
                 await update.message.reply_text(
-                    f"❌ Фиристодани файл иҷро нашуд: {str(error)[:300]}"
+                    "❌ Фиристодани файл иҷро нашуд: "
+                    f"{str(error)[:300]}"
                 )
 
         await status.edit_text(
