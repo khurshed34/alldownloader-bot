@@ -26,7 +26,12 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import RetryAfter, Forbidden, TelegramError
+from telegram.error import (
+    RetryAfter,
+    Forbidden,
+    TelegramError,
+    BadRequest,
+)
 
 
 # =====================================
@@ -34,7 +39,7 @@ from telegram.error import RetryAfter, Forbidden, TelegramError
 # =====================================
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 6777943949
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6777943949"))
 
 MAX_SIZE = 49 * 1024 * 1024
 DB_NAME = "bot_stats.db"
@@ -87,65 +92,75 @@ def restore_database():
         )
         return
 
-    response = requests.get(
-        github_db_url(),
-        headers=github_headers(),
-        params={"ref": GITHUB_BRANCH},
-        timeout=30
-    )
+    try:
+        response = requests.get(
+            github_db_url(),
+            headers=github_headers(),
+            params={"ref": GITHUB_BRANCH},
+            timeout=30
+        )
 
-    if response.status_code == 404:
-        logger.info("Базаи нав сохта мешавад.")
-        return
+        if response.status_code == 404:
+            logger.info("Базаи нав сохта мешавад.")
+            return
 
-    response.raise_for_status()
+        response.raise_for_status()
 
-    data = response.json()
-    content = base64.b64decode(data["content"])
+        data = response.json()
+        content = base64.b64decode(data["content"])
 
-    with open(DB_NAME, "wb") as file:
-        file.write(content)
+        with open(DB_NAME, "wb") as file:
+            file.write(content)
 
-    logger.info("База аз GitHub барқарор шуд.")
+        logger.info("База аз GitHub барқарор шуд.")
+
+    except Exception:
+        logger.exception("Барқарор кардани база ноком шуд.")
 
 
 def backup_database():
     if not GITHUB_TOKEN or not GITHUB_REPO:
         return
 
-    with open(DB_NAME, "rb") as file:
-        content = base64.b64encode(file.read()).decode("utf-8")
+    try:
+        with open(DB_NAME, "rb") as file:
+            content = base64.b64encode(
+                file.read()
+            ).decode("utf-8")
 
-    url = github_db_url()
+        url = github_db_url()
 
-    response = requests.get(
-        url,
-        headers=github_headers(),
-        params={"ref": GITHUB_BRANCH},
-        timeout=30
-    )
+        response = requests.get(
+            url,
+            headers=github_headers(),
+            params={"ref": GITHUB_BRANCH},
+            timeout=30
+        )
 
-    payload = {
-        "message": "Update TurboSave statistics",
-        "content": content,
-        "branch": GITHUB_BRANCH
-    }
+        payload = {
+            "message": "Update TurboSave statistics",
+            "content": content,
+            "branch": GITHUB_BRANCH
+        }
 
-    if response.status_code == 200:
-        payload["sha"] = response.json()["sha"]
-    elif response.status_code != 404:
-        response.raise_for_status()
+        if response.status_code == 200:
+            payload["sha"] = response.json()["sha"]
+        elif response.status_code != 404:
+            response.raise_for_status()
 
-    result = requests.put(
-        url,
-        headers=github_headers(),
-        json=payload,
-        timeout=60
-    )
+        result = requests.put(
+            url,
+            headers=github_headers(),
+            json=payload,
+            timeout=60
+        )
 
-    result.raise_for_status()
+        result.raise_for_status()
 
-    logger.info("База дар GitHub нигоҳ дошта шуд.")
+        logger.info("База дар GitHub нигоҳ дошта шуд.")
+
+    except Exception:
+        logger.exception("Нигоҳ доштани база дар GitHub ноком шуд.")
 
 
 # =====================================
@@ -615,7 +630,10 @@ def download_facebook(url, folder, quality):
         )
 
     except Exception as video_error:
-        logger.warning("Facebook video failed: %s", video_error)
+        logger.warning(
+            "Facebook video failed: %s",
+            video_error
+        )
 
         try:
             return download_facebook_photo(url, folder)
@@ -719,6 +737,26 @@ def admin_keyboard():
     ])
 
 
+# =====================================
+# SAFE EDIT MESSAGE
+# =====================================
+
+async def safe_edit_message(query, text, reply_markup=None):
+    try:
+        await query.edit_message_text(
+            text,
+            reply_markup=reply_markup
+        )
+
+    except BadRequest as error:
+        if "Message is not modified" not in str(error):
+            raise
+
+
+# =====================================
+# ADMIN PANEL
+# =====================================
+
 async def admin_panel(update, context):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Дастрасӣ манъ аст.")
@@ -739,7 +777,10 @@ async def admin_callback(update, context):
     await query.answer()
 
     if not is_admin(query.from_user.id):
-        await query.edit_message_text("⛔ Дастрасӣ манъ аст.")
+        await safe_edit_message(
+            query,
+            "⛔ Дастрасӣ манъ аст."
+        )
         return
 
     if query.data == "admin_stats":
@@ -763,7 +804,8 @@ async def admin_callback(update, context):
             f"📅 Дархостҳои имрӯз: {today_downloads}"
         )
 
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             text,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
@@ -794,7 +836,8 @@ async def admin_callback(update, context):
                 f"👤 @{username or 'username нест'}\n\n"
             )
 
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             text[:4000],
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(
@@ -808,7 +851,8 @@ async def admin_callback(update, context):
 
         context.user_data["awaiting_broadcast"] = True
 
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             "📢 ПОСТИ ХУДРО ФИРИСТЕД!\n\n"
             "Матн, сурат, видео ё файл фиристед.\n\n"
             "❌ Барои бекор кардан /cancel нависед."
@@ -818,7 +862,8 @@ async def admin_callback(update, context):
 
         context.user_data["awaiting_broadcast"] = False
 
-        await query.edit_message_text(
+        await safe_edit_message(
+            query,
             "👑 ПАНЕЛИ АДМИН",
             reply_markup=admin_keyboard()
         )
@@ -865,6 +910,7 @@ async def broadcast_post(update, context):
 
         except RetryAfter as error:
             wait_time = error.retry_after
+
             if hasattr(wait_time, "total_seconds"):
                 wait_time = wait_time.total_seconds()
 
