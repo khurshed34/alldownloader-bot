@@ -38,10 +38,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run bot
+            - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
-        run: python main.py
+        run: |
+          for i in 1 2 3 4 5; do
+            python -u main.py && exit 0
+            echo "Bot stopped. Restarting in 30 seconds..."
+            sleep 30
+          done
+          exit 1
