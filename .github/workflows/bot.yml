@@ -1,9 +1,10 @@
+
 name: TurboSave Bot
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 */6 * * *"
 
 permissions:
   contents: write
